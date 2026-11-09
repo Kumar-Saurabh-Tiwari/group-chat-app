@@ -1,0 +1,29 @@
+:root {
+  --bs-primary: #6758d8;
+  --bs-primary-rgb: 103, 88, 216;
+  --bs-link-color: #6758d8;
+}
+
+body {
+  min-height: 100vh;
+  background: #f5f7fb;
+  color: #1d2535;
+}
+
+.hero {
+  background:
+    radial-gradient(ellipse at 85% 15%, rgba(166, 152, 255, .36), transparent 34%),
+    linear-gradient(145deg, #4237a7, #6354d1 52%, #796be0);
+}
+
+.brand-mark {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: #fff;
+  color: #6758d8;
+  font-size: 1.45rem;
+  line-height: 1;
+}
