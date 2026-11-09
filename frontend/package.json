@@ -1,0 +1,12 @@
+{
+  "name": "group-chat-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GroupChat frontend served together with its auth API",
+  "scripts": {
+    "start": "node ../backend/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

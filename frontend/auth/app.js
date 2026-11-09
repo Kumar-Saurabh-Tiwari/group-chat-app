@@ -4,8 +4,10 @@ const mode = authForm.dataset.authMode;
 const passwordInput = document.querySelector("#password");
 const passwordToggle = document.querySelector("#password-toggle");
 const identifierInput = document.querySelector("#identifier");
+const emailInput = document.querySelector("#email");
 const phoneInput = document.querySelector("#phone");
 const forgotPassword = document.querySelector("#forgot-password");
+const submitButton = authForm.querySelector('button[type="submit"]');
 
 function isValidPhone(value) {
   const trimmedValue = value.trim();
@@ -16,6 +18,11 @@ function isValidPhone(value) {
 function isValidEmailOrPhone(value) {
   const trimmedValue = value.trim();
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedValue) || isValidPhone(trimmedValue);
+}
+
+function showMessage(message, type) {
+  formAlert.className = `alert alert-${type}`;
+  formAlert.textContent = message;
 }
 
 if (passwordToggle) {
@@ -31,8 +38,7 @@ if (passwordToggle) {
 if (forgotPassword) {
   forgotPassword.addEventListener("click", (event) => {
     event.preventDefault();
-    formAlert.className = "alert alert-info";
-    formAlert.textContent = "Password reset is not available in this frontend demo.";
+    showMessage("Password reset is not available yet.", "info");
   });
 }
 
@@ -56,7 +62,7 @@ if (phoneInput) {
   });
 }
 
-authForm.addEventListener("submit", (event) => {
+authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   authForm.classList.add("was-validated");
   formAlert.className = "alert d-none";
@@ -81,8 +87,44 @@ authForm.addEventListener("submit", (event) => {
     return;
   }
 
-  formAlert.className = "alert alert-info";
-  formAlert.textContent = mode === "register"
-    ? "Your details look good. Account creation will be connected when a backend is added."
-    : "Your details look good. Sign-in will be connected when a backend is added.";
+  const payload = mode === "register"
+    ? {
+        name: authForm.elements.name.value.trim(),
+        email: authForm.elements.email.value.trim(),
+        phone: authForm.elements.phone.value.trim(),
+        password: authForm.elements.password.value
+      }
+    : {
+        identifier: authForm.elements.identifier.value.trim(),
+        password: authForm.elements.password.value
+      };
+
+  submitButton.disabled = true;
+  const originalButtonText = submitButton.textContent;
+  submitButton.textContent = mode === "register" ? "Creating account..." : "Signing in...";
+
+  try {
+    const response = await fetch(`/api/auth/${mode === "register" ? "signup" : "login"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      showMessage(result.error || "The request could not be completed.", "danger");
+      return;
+    }
+
+    if (result.token) {
+      sessionStorage.setItem("authToken", result.token);
+    }
+
+    showMessage(result.message, "success");
+  } catch (error) {
+    showMessage("Could not reach the server. Make sure the backend is running and try again.", "danger");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = originalButtonText;
+  }
 });
