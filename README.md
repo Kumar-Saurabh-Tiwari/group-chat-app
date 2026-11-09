@@ -1,6 +1,6 @@
 # GroupChat
 
-Simple frontend and backend for account registration and login.
+Group Chat App
 
 ## Project structure
 
