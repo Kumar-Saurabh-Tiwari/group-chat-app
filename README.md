@@ -30,6 +30,8 @@ Group Chat App
 - `GET /api/auth/me` — validates the `Authorization: Bearer <token>` header and returns the signed-in user
 - `GET /api/messages` — returns all messages with sender IDs (bearer token required); optionally filter with `?conversationId=<id>`
 - `POST /api/messages` — saves `{ "conversationId", "message" }` for the authenticated user (bearer token required)
+- `WS /ws` — WebSocket service; first send `{ "type": "authenticate", "token": "<JWT>" }`, then subscribe with `{ "type": "subscribe", "conversationId": "<id>" }`. Persisted messages are delivered as `{ "type": "message", "message": { ... } }` events to subscribers. Use `{ "type": "unsubscribe", "conversationId": "<id>" }` to leave a conversation.
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
 Chat messages require the `chat_messages` table from `backend/schema.sql`; run that schema against the configured database before using chat.
+The WebSocket service broadcasts messages persisted by the HTTP API; browser connection and live-message rendering are not wired into the frontend yet.

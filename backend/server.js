@@ -1,9 +1,11 @@
 const path = require("path");
+const http = require("http");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
+const ChatRealtimeService = require("./services/chat-realtime-service");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -147,16 +149,17 @@ app.post("/api/messages", requireAuth, async (req, res) => {
     );
     const savedMessage = messages[0];
 
-    return res.status(201).json({
-      message: {
-        id: String(savedMessage.id),
-        conversationId: savedMessage.conversation_id,
-        userId: String(savedMessage.user_id),
-        sender: savedMessage.sender,
-        text: savedMessage.message,
-        createdAt: savedMessage.created_at
-      }
-    });
+    const responseMessage = {
+      id: String(savedMessage.id),
+      conversationId: savedMessage.conversation_id,
+      userId: String(savedMessage.user_id),
+      sender: savedMessage.sender,
+      text: savedMessage.message,
+      createdAt: savedMessage.created_at
+    };
+    chatRealtime.publishMessage(responseMessage);
+
+    return res.status(201).json({ message: responseMessage });
   } catch (error) {
     console.error("Saving message failed:", error);
     return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
@@ -292,6 +295,13 @@ app.use((error, req, res, next) => {
   return res.status(500).json({ error: "An unexpected server error occurred." });
 });
 
-app.listen(port, () => {
+const server = http.createServer(app);
+const chatRealtime = new ChatRealtimeService({
+  server,
+  jwtSecret,
+  isValidConversationId
+});
+
+server.listen(port, () => {
   console.log(`GroupChat is running at http://localhost:${port}`);
 });
