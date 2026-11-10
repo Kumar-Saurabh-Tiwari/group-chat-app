@@ -118,6 +118,8 @@ authForm.addEventListener("submit", async (event) => {
 
     if (result.token) {
       sessionStorage.setItem("authToken", result.token);
+      window.location.assign("../chat.html");
+      return;
     }
 
     showMessage(result.message, "success");

@@ -4,7 +4,7 @@ Group Chat App
 
 ## Project structure
 
-- `frontend/` — home, login, and registration pages
+- `frontend/` — home, login, registration, and interactive chat demo pages
 - `backend/` — Express API, MySQL schema, and environment settings
 
 ## Run locally
@@ -27,5 +27,6 @@ Group Chat App
 
 - `POST /api/auth/signup` — `{ "name", "email", "phone", "password" }`
 - `POST /api/auth/login` — `{ "identifier", "password" }`, where identifier is an email or phone number
+- `GET /api/auth/me` — validates the `Authorization: Bearer <token>` header and returns the signed-in user
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.

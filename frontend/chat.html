@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f5f6fa">
+    <title>Chats | GroupChat</title>
+    <link rel="stylesheet" href="chat.css">
+  </head>
+  <body>
+    <div class="auth-status" id="auth-status" role="status" aria-live="polite">Checking your session...</div>
+    <main class="chat-app" aria-label="GroupChat">
+      <aside class="conversation-panel" id="conversation-panel" aria-label="Conversations">
+        <header class="sidebar-header">
+          <a class="brand" href="index.html" aria-label="GroupChat home">
+            <span class="brand-mark" aria-hidden="true">g</span>
+            <span>groupchat</span>
+          </a>
+          <span class="profile-avatar" id="profile-avatar" aria-label="Your profile"></span>
+        </header>
+
+        <div class="inbox-heading">
+          <div>
+            <p class="eyebrow">YOUR SPACE</p>
+            <h1>Messages</h1>
+          </div>
+          <span class="inbox-count" id="inbox-count" aria-label="Conversation count"></span>
+        </div>
+
+        <label class="search-box">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m16 16 4 4"></path></svg>
+          <input id="conversation-search" type="search" placeholder="Search conversations" autocomplete="off" aria-label="Search conversations">
+          <kbd>/</kbd>
+        </label>
+
+        <div class="conversation-heading">
+          <span>ALL CHATS</span>
+          <span class="online-label"><span></span> 2 online</span>
+        </div>
+        <nav class="conversation-list" id="conversation-list" aria-label="All chats"></nav>
+        <a class="sidebar-footer" href="index.html">
+          <span class="footer-icon" aria-hidden="true">←</span>
+          <span>Back to home</span>
+        </a>
+      </aside>
+
+      <section class="conversation-view" aria-label="Chat conversation">
+        <header class="chat-header">
+          <button class="back-button" id="back-button" type="button" aria-label="Back to conversations">←</button>
+          <div class="chat-avatar" id="chat-avatar" aria-hidden="true"></div>
+          <div class="chat-heading">
+            <h2 id="chat-title"></h2>
+            <p id="chat-subtitle"></p>
+          </div>
+          <div class="header-actions">
+            <span class="secure-label"><span aria-hidden="true">✦</span> Your little corner of the internet</span>
+          </div>
+        </header>
+
+        <div class="message-area" id="message-area" aria-live="polite">
+          <div class="message-list" id="message-list" aria-label="Messages"></div>
+        </div>
+
+        <form class="composer" id="message-form">
+          <div class="composer-box">
+            <label class="visually-hidden" for="message-input">Write a message</label>
+            <textarea id="message-input" rows="1" maxlength="2000" placeholder="Write a message..." required></textarea>
+            <div class="composer-footer">
+              <span class="composer-hint">Press <kbd>Enter</kbd> to send · <kbd>Shift + Enter</kbd> for a new line</span>
+              <button class="send-button" type="submit" aria-label="Send message">
+                <span>Send</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 14-7-4 14-3-6-7-1Z"></path><path d="m12 13 7-8"></path></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script src="chat.js"></script>
+  </body>
+</html>

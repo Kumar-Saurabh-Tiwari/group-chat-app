@@ -52,6 +52,36 @@ function isDatabaseUnavailable(error) {
   return ["ECONNREFUSED", "ER_ACCESS_DENIED_ERROR", "ER_BAD_DB_ERROR", "PROTOCOL_CONNECTION_LOST"].includes(error.code);
 }
 
+function requireAuth(req, res, next) {
+  const authorization = req.get("authorization") || "";
+  const [scheme, token, ...extraParts] = authorization.split(" ");
+
+  if (scheme !== "Bearer" || !token || extraParts.length > 0) {
+    return res.status(401).json({ error: "A valid bearer token is required." });
+  }
+
+  try {
+    const payload = jwt.verify(token, jwtSecret, { algorithms: ["HS256"] });
+    if (typeof payload === "string" || !payload.sub) {
+      return res.status(401).json({ error: "A valid bearer token is required." });
+    }
+
+    req.authUser = { id: payload.sub, name: payload.name };
+    return next();
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({ error: "Your session is invalid or has expired. Please log in again." });
+    }
+
+    console.error("Token verification failed:", error);
+    return res.status(500).json({ error: "Unable to verify your session." });
+  }
+}
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  return res.json({ user: req.authUser });
+});
+
 app.post("/api/auth/signup", async (req, res) => {
   const { name, email, phone, password } = req.body || {};
 
