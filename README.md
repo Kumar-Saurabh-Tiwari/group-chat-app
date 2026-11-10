@@ -11,6 +11,7 @@ Group Chat App
   - `socket-io/handlers/chat.js` — conversation room, presence, and disconnect events
   - `socket-io/handlers/personalChat.js` — authenticated personal rooms and direct message events
   - `socket-io/personal-room.js` — deterministic room IDs shared by each pair of users
+  - `services/s3-storage.js` — isolated S3 presigned-upload service (not yet connected to chat routes)
 
 ## Run locally
 
@@ -27,6 +28,19 @@ Group Chat App
    npm start
    ```
 6. Open `http://localhost:3000`. This start command serves the frontend and auth API together; do not use a separate static/Live Server server.
+
+## S3 media uploads (prepared, not connected)
+
+The backend has an isolated service for generating short-lived S3 presigned POST forms. It is not imported by the server, exposed as an API route, or required for startup, so the existing chat continues to work without AWS configuration.
+
+When you are ready to connect uploads:
+
+1. Create a private S3 bucket and set `AWS_REGION` and `S3_BUCKET` in `backend/.env`.
+2. Provide AWS credentials using the AWS SDK credential provider chain (prefer an IAM role; for local development, use a configured AWS profile or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in the ignored `.env` file).
+3. Give the app identity only the required bucket upload permissions, and keep S3 Block Public Access enabled.
+4. Import `createS3Storage` from `backend/services/s3-storage.js` in a future authenticated upload route. Call `createUploadForm({ userId, contentType })` with the authenticated user ID; return the form URL, fields, and object key to the client. The policy limits uploads to 25 MiB and the supported content types. The browser uploads the file directly to S3 using the returned URL and fields.
+
+The service validates IDs and file types, generates object keys itself, and does not accept a caller-supplied bucket or key. An API route, database attachment records, download access, and frontend integration still need to be added before media can be shared in chat.
 
 ## API
 

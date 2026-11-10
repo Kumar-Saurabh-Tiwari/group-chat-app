@@ -769,12 +769,138 @@ kbd {
   color: #aaa9b6;
 }
 
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.attachment-list[hidden],
+.attachment-note[hidden] {
+  display: none;
+}
+
+.attachment-item {
+  display: flex;
+  width: min(230px, 100%);
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #eeedf3;
+  border-radius: 9px;
+  background: #fafafd;
+}
+
+.attachment-preview,
+.attachment-type {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: #eeeaff;
+  color: var(--purple);
+  font-size: 9px;
+  font-weight: 700;
+  object-fit: cover;
+}
+
+.attachment-details {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  color: #4a495c;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  color: #9998a7;
+  font-size: 9px;
+}
+
+.attachment-remove {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #858497;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.attachment-remove:hover,
+.attachment-remove:focus-visible {
+  background: #f0eef9;
+  color: #5549ba;
+}
+
+.attachment-note {
+  margin: 7px 0 0;
+  color: #898898;
+  font-size: 9px;
+}
+
+.attachment-note.error {
+  color: #a24952;
+}
+
 .composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding-top: 7px;
+}
+
+.composer-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8986a0;
+  cursor: pointer;
+}
+
+.attachment-button:hover,
+.attachment-button:focus-visible {
+  background: #f2f0fc;
+  color: var(--purple);
+}
+
+.attachment-button svg {
+  width: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .composer-hint {
@@ -815,6 +941,8 @@ kbd {
 }
 
 .send-button:focus-visible,
+.attachment-button:focus-visible,
+.attachment-remove:focus-visible,
 .conversation-item:focus-visible,
 .back-button:focus-visible,
 .sidebar-footer:focus-visible {

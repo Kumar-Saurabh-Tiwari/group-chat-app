@@ -64,6 +64,10 @@ const messageArea = document.querySelector("#message-area");
 const messageList = document.querySelector("#message-list");
 const messageForm = document.querySelector("#message-form");
 const messageInput = document.querySelector("#message-input");
+const attachmentInput = document.querySelector("#attachment-input");
+const attachmentButton = document.querySelector("#attachment-button");
+const attachmentList = document.querySelector("#attachment-list");
+const attachmentNote = document.querySelector("#attachment-note");
 const backButton = document.querySelector("#back-button");
 const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
@@ -83,6 +87,8 @@ let realtimeSocket = null;
 let userSearchTimer = null;
 let userSearchController = null;
 let userSearchRequestId = 0;
+const selectedAttachments = [];
+let attachmentPreviewUrls = [];
 const personalConversations = [];
 const groupConversations = [];
 const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
@@ -105,6 +111,71 @@ function formatMessageTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function formatFileSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getAttachmentType(file) {
+  if (file.type.startsWith("image/")) return "Image";
+  if (file.type.startsWith("video/")) return "Video";
+  if (file.type.startsWith("audio/")) return "Audio";
+  if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) return "PDF";
+  return "File";
+}
+
+function renderAttachments() {
+  attachmentPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  attachmentPreviewUrls = [];
+  attachmentList.replaceChildren();
+  attachmentList.hidden = selectedAttachments.length === 0;
+  attachmentNote.hidden = selectedAttachments.length === 0;
+
+  selectedAttachments.forEach((file, index) => {
+    const item = document.createElement("div");
+    item.className = "attachment-item";
+
+    if (file.type.startsWith("image/")) {
+      const preview = document.createElement("img");
+      preview.className = "attachment-preview";
+      preview.alt = "";
+      preview.src = URL.createObjectURL(file);
+      attachmentPreviewUrls.push(preview.src);
+      item.append(preview);
+    } else {
+      const type = document.createElement("span");
+      type.className = "attachment-type";
+      type.textContent = getAttachmentType(file);
+      item.append(type);
+    }
+
+    const details = document.createElement("span");
+    details.className = "attachment-details";
+    const name = document.createElement("span");
+    name.className = "attachment-name";
+    name.textContent = file.name;
+    const size = document.createElement("span");
+    size.className = "attachment-size";
+    size.textContent = `${getAttachmentType(file)} · ${formatFileSize(file.size)}`;
+    details.append(name, size);
+
+    const remove = document.createElement("button");
+    remove.className = "attachment-remove";
+    remove.type = "button";
+    remove.dataset.attachmentIndex = String(index);
+    remove.setAttribute("aria-label", `Remove ${file.name}`);
+    remove.textContent = "×";
+    item.append(details, remove);
+    attachmentList.append(item);
+  });
+
+  if (selectedAttachments.length > 0) {
+    attachmentNote.textContent = "Preview only - file uploads are not connected yet.";
+    attachmentNote.classList.remove("error");
+  }
 }
 
 function addMessage(conversation, message) {
@@ -924,10 +995,31 @@ messageInput.addEventListener("keydown", (event) => {
   }
 });
 
+attachmentButton.addEventListener("click", () => attachmentInput.click());
+
+attachmentInput.addEventListener("change", () => {
+  selectedAttachments.push(...attachmentInput.files);
+  attachmentInput.value = "";
+  renderAttachments();
+});
+
+attachmentList.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("[data-attachment-index]");
+  if (!removeButton) return;
+  selectedAttachments.splice(Number(removeButton.dataset.attachmentIndex), 1);
+  renderAttachments();
+});
+
 messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = messageInput.value.trim();
   if (!text) return;
+  if (selectedAttachments.length > 0) {
+    attachmentNote.textContent = "File upload is not connected yet. Remove attachments before sending.";
+    attachmentNote.classList.add("error");
+    attachmentNote.hidden = false;
+    return;
+  }
 
   const conversation = getActiveConversation();
   const submitButton = messageForm.querySelector('button[type="submit"]');
