@@ -67,6 +67,7 @@ const profileAvatar = document.querySelector("#profile-avatar");
 
 let activeConversationId = conversations[0].id;
 let currentUser = null;
+let realtimeSocket = null;
 
 const senderColors = [
   ["#e9c4d2", "#754c5d"],
@@ -85,6 +86,57 @@ function formatMessageTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function addMessage(conversation, message) {
+  if (conversation.messages.some((existing) => existing.id === message.id)) return false;
+
+  conversation.messages.push(message);
+  conversation.messages.sort((first, second) =>
+    new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
+  );
+  conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${message.text}`;
+  conversation.time = formatMessageTime(message.createdAt);
+  return true;
+}
+
+function joinActiveConversation() {
+  if (!realtimeSocket || !realtimeSocket.connected) return;
+  realtimeSocket.emit("conversation:join", { conversationId: activeConversationId }, (result) => {
+    if (!result || !result.ok) {
+      console.error("Could not join chat conversation:", result && result.error);
+    }
+  });
+}
+
+function connectRealtime() {
+  if (typeof window.io !== "function") {
+    console.error("Socket.IO client failed to load; real-time messages are unavailable.");
+    return;
+  }
+
+  realtimeSocket = window.io({
+    autoConnect: false,
+    auth: { token: sessionStorage.getItem("authToken") }
+  });
+
+  realtimeSocket.on("connect", joinActiveConversation);
+  realtimeSocket.on("message:new", (message) => {
+    const conversation = conversations.find((item) => item.id === message.conversationId);
+    if (!conversation || !addMessage(conversation, message)) return;
+
+    renderConversations();
+    if (conversation.id === activeConversationId) renderMessages();
+  });
+  realtimeSocket.on("connect_error", (error) => {
+    if (error.data && error.data.code === "AUTHENTICATION_ERROR") {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+    console.error("Socket.IO connection failed:", error.message);
+  });
+  realtimeSocket.connect();
 }
 
 async function verifySession() {
@@ -284,12 +336,15 @@ async function loadMessages() {
     if (!response.ok) throw new Error(result.error || "Unable to load messages.");
 
     conversations.forEach((conversation) => {
-      conversation.messages = result.messages.filter((message) => message.conversationId === conversation.id);
+      const loadedMessages = result.messages.filter((message) => message.conversationId === conversation.id);
+      const receivedWhileLoading = conversation.messages;
+      conversation.messages = [];
+      [...loadedMessages, ...receivedWhileLoading].forEach((message) => addMessage(conversation, message));
       const latestMessage = conversation.messages.at(-1);
-      conversation.preview = latestMessage
-        ? `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`
-        : "No messages yet";
-      conversation.time = latestMessage ? formatMessageTime(latestMessage.createdAt) : "";
+      if (!latestMessage) {
+        conversation.preview = "No messages yet";
+        conversation.time = "";
+      }
     });
     renderConversations();
     renderMessages();
@@ -300,9 +355,13 @@ async function loadMessages() {
 }
 
 function selectConversation(id) {
+  const previousConversationId = activeConversationId;
   activeConversationId = id;
   const conversation = getActiveConversation();
   conversation.unread = 0;
+  if (realtimeSocket && realtimeSocket.connected && previousConversationId !== id) {
+    realtimeSocket.emit("conversation:leave", { conversationId: previousConversationId });
+  }
   renderConversations();
   chatAvatar.textContent = conversation.initials;
   chatAvatar.style.backgroundColor = conversation.color;
@@ -311,6 +370,7 @@ function selectConversation(id) {
   chatSubtitle.textContent = conversation.members;
   app.classList.add("show-conversation");
   renderMessages();
+  joinActiveConversation();
 }
 
 conversationList.addEventListener("click", (event) => {
@@ -360,9 +420,7 @@ messageForm.addEventListener("submit", async (event) => {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Unable to send message.");
 
-    conversation.messages.push(result.message);
-    conversation.preview = `You: ${result.message.text}`;
-    conversation.time = formatMessageTime(result.message.createdAt);
+    addMessage(conversation, result.message);
     messageInput.value = "";
     messageInput.style.height = "auto";
     renderConversations();
@@ -390,6 +448,7 @@ document.addEventListener("keydown", (event) => {
 verifySession().then((isAuthenticated) => {
   if (isAuthenticated) {
     renderConversations();
+    connectRealtime();
     loadMessages();
   }
 });
