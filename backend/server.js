@@ -88,24 +88,19 @@ function isValidConversationId(value) {
 
 app.get("/api/messages", requireAuth, async (req, res) => {
   const { conversationId } = req.query;
-  if (!isValidConversationId(conversationId)) {
+  if (conversationId !== undefined && !isValidConversationId(conversationId)) {
     return res.status(400).json({ error: "A valid conversationId is required." });
   }
 
   try {
     const [messages] = await database.execute(
-      `SELECT recent.id, recent.conversation_id, recent.user_id, users.name AS sender,
-              recent.message, recent.created_at
-       FROM (
-         SELECT id, conversation_id, user_id, message, created_at
-         FROM chat_messages
-         WHERE conversation_id = ?
-         ORDER BY created_at DESC, id DESC
-         LIMIT 200
-       ) AS recent
-       INNER JOIN users ON users.id = recent.user_id
-       ORDER BY recent.created_at ASC, recent.id ASC`,
-      [conversationId]
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       ${conversationId === undefined ? "" : "WHERE chat_messages.conversation_id = ?"}
+       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      conversationId === undefined ? [] : [conversationId]
     );
 
     return res.json({

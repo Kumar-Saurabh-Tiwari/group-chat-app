@@ -67,7 +67,6 @@ const profileAvatar = document.querySelector("#profile-avatar");
 
 let activeConversationId = conversations[0].id;
 let currentUser = null;
-let messageRequestId = 0;
 
 const senderColors = [
   ["#e9c4d2", "#754c5d"],
@@ -269,11 +268,10 @@ function showChatNotice(message, className = "chat-notice", replace = true) {
   else messageList.append(notice);
 }
 
-async function loadMessages(conversation) {
-  const requestId = ++messageRequestId;
+async function loadMessages() {
   showChatNotice("Loading messages...");
   try {
-    const response = await fetch(`/api/messages?conversationId=${encodeURIComponent(conversation.id)}`, {
+    const response = await fetch("/api/messages", {
       headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
     });
     if (response.status === 401) {
@@ -284,18 +282,18 @@ async function loadMessages(conversation) {
 
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Unable to load messages.");
-    if (requestId !== messageRequestId) return;
 
-    conversation.messages = result.messages;
-    const latestMessage = conversation.messages.at(-1);
-    conversation.preview = latestMessage
-      ? `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`
-      : "No messages yet";
-    conversation.time = latestMessage ? formatMessageTime(latestMessage.createdAt) : "";
+    conversations.forEach((conversation) => {
+      conversation.messages = result.messages.filter((message) => message.conversationId === conversation.id);
+      const latestMessage = conversation.messages.at(-1);
+      conversation.preview = latestMessage
+        ? `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`
+        : "No messages yet";
+      conversation.time = latestMessage ? formatMessageTime(latestMessage.createdAt) : "";
+    });
     renderConversations();
     renderMessages();
   } catch (error) {
-    if (requestId !== messageRequestId) return;
     console.error("Loading messages failed:", error);
     showChatNotice(error.message || "Could not load messages. Please try again.", "chat-notice error");
   }
@@ -312,7 +310,7 @@ function selectConversation(id) {
   chatTitle.textContent = conversation.name;
   chatSubtitle.textContent = conversation.members;
   app.classList.add("show-conversation");
-  loadMessages(conversation);
+  renderMessages();
 }
 
 conversationList.addEventListener("click", (event) => {
@@ -392,6 +390,6 @@ document.addEventListener("keydown", (event) => {
 verifySession().then((isAuthenticated) => {
   if (isAuthenticated) {
     renderConversations();
-    loadMessages(getActiveConversation());
+    loadMessages();
   }
 });

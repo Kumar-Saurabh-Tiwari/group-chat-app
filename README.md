@@ -28,7 +28,7 @@ Group Chat App
 - `POST /api/auth/signup` — `{ "name", "email", "phone", "password" }`
 - `POST /api/auth/login` — `{ "identifier", "password" }`, where identifier is an email or phone number
 - `GET /api/auth/me` — validates the `Authorization: Bearer <token>` header and returns the signed-in user
-- `GET /api/messages?conversationId=<id>` — returns up to 200 messages for a conversation (bearer token required)
+- `GET /api/messages` — returns all messages with sender IDs (bearer token required); optionally filter with `?conversationId=<id>`
 - `POST /api/messages` — saves `{ "conversationId", "message" }` for the authenticated user (bearer token required)
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
