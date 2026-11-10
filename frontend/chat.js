@@ -6,17 +6,11 @@ const conversations = [
     color: "#f4d2b7",
     textColor: "#79513d",
     members: "4 members · 2 online",
-    preview: "Maya: That little patio looks perfect",
-    time: "2:42 PM",
-    unread: 2,
+    preview: "No messages yet",
+    time: "",
+    unread: 0,
     online: true,
-    messages: [
-      { sender: "Maya", initials: "M", color: "#e9c4d2", textColor: "#754c5d", text: "Made it to Friday! What’s everyone thinking for this weekend?", time: "2:14 PM" },
-      { sender: "Jordan", initials: "J", color: "#c5d9ec", textColor: "#425f7b", text: "How about trying that new place downtown? I’ve heard the patio is lovely.", time: "2:16 PM" },
-      { sender: "You", initials: "A", outgoing: true, text: "I’m in! Saturday evening works for me ✨", time: "2:21 PM" },
-      { sender: "Sam", initials: "S", color: "#d8d0f0", textColor: "#5b507d", text: "Saturday is perfect. I’ll check if they take reservations.", time: "2:28 PM" },
-      { sender: "Maya", initials: "M", color: "#e9c4d2", textColor: "#754c5d", text: "That little patio looks perfect. 7-ish?", time: "2:42 PM" }
-    ]
+    messages: []
   },
   {
     id: "design",
@@ -25,14 +19,10 @@ const conversations = [
     color: "#d8d1fa",
     textColor: "#574b91",
     members: "6 members · 1 online",
-    preview: "Alex: Just shared the latest mockups",
-    time: "1:18 PM",
-    unread: 1,
-    messages: [
-      { sender: "Alex", initials: "A", color: "#c5d9ec", textColor: "#425f7b", text: "Just shared the latest mockups. The new flow feels much simpler now.", time: "1:05 PM" },
-      { sender: "You", initials: "A", outgoing: true, text: "Love the direction! The spacing feels much more relaxed.", time: "1:12 PM" },
-      { sender: "Priya", initials: "P", color: "#f0d7b6", textColor: "#7a5a32", text: "Agreed. I’ll take a closer look before our review.", time: "1:18 PM" }
-    ]
+    preview: "No messages yet",
+    time: "",
+    unread: 0,
+    messages: []
   },
   {
     id: "family",
@@ -41,14 +31,10 @@ const conversations = [
     color: "#c7e7d7",
     textColor: "#366a52",
     members: "5 members",
-    preview: "You: Save me a slice!",
-    time: "11:36 AM",
+    preview: "No messages yet",
+    time: "",
     unread: 0,
-    messages: [
-      { sender: "Dad", initials: "D", color: "#e6cebd", textColor: "#74543e", text: "Sunday lunch at ours this week. I’m trying a new recipe!", time: "11:24 AM" },
-      { sender: "Lena", initials: "L", color: "#f0d2df", textColor: "#764d61", text: "Count me in. Should I bring anything?", time: "11:31 AM" },
-      { sender: "You", initials: "A", outgoing: true, text: "Save me a slice! I’ll bring dessert 🍰", time: "11:36 AM" }
-    ]
+    messages: []
   },
   {
     id: "hikes",
@@ -57,13 +43,10 @@ const conversations = [
     color: "#d6e5c4",
     textColor: "#536c3d",
     members: "8 members",
-    preview: "Chris: Trail looks clear this weekend",
-    time: "Yesterday",
+    preview: "No messages yet",
+    time: "",
     unread: 0,
-    messages: [
-      { sender: "Chris", initials: "C", color: "#d6e5c4", textColor: "#536c3d", text: "Trail looks clear this weekend, and the weather should be great.", time: "Yesterday" },
-      { sender: "You", initials: "A", outgoing: true, text: "Already looking forward to it!", time: "Yesterday" }
-    ]
+    messages: []
   }
 ];
 
@@ -83,6 +66,27 @@ const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
 
 let activeConversationId = conversations[0].id;
+let currentUser = null;
+let messageRequestId = 0;
+
+const senderColors = [
+  ["#e9c4d2", "#754c5d"],
+  ["#c5d9ec", "#425f7b"],
+  ["#d8d0f0", "#5b507d"],
+  ["#f0d7b6", "#7a5a32"],
+  ["#c7e7d7", "#366a52"]
+];
+
+function getSenderColors(sender) {
+  const colorIndex = [...sender].reduce((total, character) => total + character.charCodeAt(0), 0) % senderColors.length;
+  return senderColors[colorIndex];
+}
+
+function formatMessageTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+}
 
 async function verifySession() {
   const token = sessionStorage.getItem("authToken");
@@ -107,7 +111,8 @@ async function verifySession() {
     }
 
     const result = await response.json();
-    profileAvatar.textContent = result.user.name.slice(0, 1).toUpperCase();
+    currentUser = result.user;
+    profileAvatar.textContent = currentUser.name.slice(0, 1).toUpperCase();
     document.body.classList.add("authenticated");
     return true;
   } catch (error) {
@@ -194,11 +199,12 @@ function renderConversations() {
 
 function createMessage(message) {
   const row = document.createElement("article");
-  row.className = `message-row${message.outgoing ? " outgoing" : ""}`;
+  const outgoing = message.userId === currentUser.id;
+  row.className = `message-row${outgoing ? " outgoing" : ""}`;
 
   const content = document.createElement("div");
   content.className = "message-content";
-  if (!message.outgoing) {
+  if (!outgoing) {
     const name = document.createElement("span");
     name.className = "message-name";
     name.textContent = message.sender;
@@ -210,8 +216,9 @@ function createMessage(message) {
   bubble.textContent = message.text;
   const time = document.createElement("time");
   time.className = "message-time";
-  time.textContent = message.time;
-  if (message.outgoing) {
+  time.dateTime = new Date(message.createdAt).toISOString();
+  time.textContent = formatMessageTime(message.createdAt);
+  if (outgoing) {
     const readMark = document.createElement("span");
     readMark.className = "read-mark";
     readMark.setAttribute("aria-label", "Sent");
@@ -220,10 +227,11 @@ function createMessage(message) {
   }
   content.append(bubble, time);
 
-  if (message.outgoing) {
+  if (outgoing) {
     row.append(content);
   } else {
-    row.append(makeAvatar(message.initials, message.color, message.textColor, "message-sender-avatar"), content);
+    const [background, color] = getSenderColors(message.sender);
+    row.append(makeAvatar(message.sender.slice(0, 1).toUpperCase(), background, color, "message-sender-avatar"), content);
   }
   return row;
 }
@@ -237,13 +245,60 @@ function renderMessages() {
   chatSubtitle.textContent = conversation.members;
   messageList.replaceChildren();
 
-  const divider = document.createElement("div");
-  divider.className = "day-divider";
-  divider.textContent = "TODAY";
-  messageList.append(divider, ...conversation.messages.map(createMessage));
+  if (conversation.messages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "day-divider";
+    empty.textContent = "START A CONVERSATION";
+    messageList.append(empty);
+  } else {
+    const divider = document.createElement("div");
+    divider.className = "day-divider";
+    divider.textContent = "MESSAGES";
+    messageList.append(divider, ...conversation.messages.map(createMessage));
+  }
   messageArea.style.scrollBehavior = "auto";
   messageArea.scrollTop = messageArea.scrollHeight;
   messageArea.style.scrollBehavior = "";
+}
+
+function showChatNotice(message, className = "chat-notice", replace = true) {
+  const notice = document.createElement("p");
+  notice.className = className;
+  notice.textContent = message;
+  if (replace) messageList.replaceChildren(notice);
+  else messageList.append(notice);
+}
+
+async function loadMessages(conversation) {
+  const requestId = ++messageRequestId;
+  showChatNotice("Loading messages...");
+  try {
+    const response = await fetch(`/api/messages?conversationId=${encodeURIComponent(conversation.id)}`, {
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to load messages.");
+    if (requestId !== messageRequestId) return;
+
+    conversation.messages = result.messages;
+    const latestMessage = conversation.messages.at(-1);
+    conversation.preview = latestMessage
+      ? `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`
+      : "No messages yet";
+    conversation.time = latestMessage ? formatMessageTime(latestMessage.createdAt) : "";
+    renderConversations();
+    renderMessages();
+  } catch (error) {
+    if (requestId !== messageRequestId) return;
+    console.error("Loading messages failed:", error);
+    showChatNotice(error.message || "Could not load messages. Please try again.", "chat-notice error");
+  }
 }
 
 function selectConversation(id) {
@@ -251,9 +306,13 @@ function selectConversation(id) {
   const conversation = getActiveConversation();
   conversation.unread = 0;
   renderConversations();
-  renderMessages();
+  chatAvatar.textContent = conversation.initials;
+  chatAvatar.style.backgroundColor = conversation.color;
+  chatAvatar.style.color = conversation.textColor;
+  chatTitle.textContent = conversation.name;
+  chatSubtitle.textContent = conversation.members;
   app.classList.add("show-conversation");
-  messageInput.focus({ preventScroll: true });
+  loadMessages(conversation);
 }
 
 conversationList.addEventListener("click", (event) => {
@@ -275,22 +334,48 @@ messageInput.addEventListener("keydown", (event) => {
   }
 });
 
-messageForm.addEventListener("submit", (event) => {
+messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = messageInput.value.trim();
   if (!text) return;
 
   const conversation = getActiveConversation();
-  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date());
-  const message = { sender: "You", initials: "A", outgoing: true, text, time };
-  conversation.messages.push(message);
-  conversation.preview = `You: ${text}`;
-  conversation.time = time;
-  messageInput.value = "";
-  messageInput.style.height = "auto";
-  renderConversations();
-  renderMessages();
-  messageInput.focus({ preventScroll: true });
+  const submitButton = messageForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+      },
+      body: JSON.stringify({ conversationId: conversation.id, message: text })
+    });
+
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to send message.");
+
+    conversation.messages.push(result.message);
+    conversation.preview = `You: ${result.message.text}`;
+    conversation.time = formatMessageTime(result.message.createdAt);
+    messageInput.value = "";
+    messageInput.style.height = "auto";
+    renderConversations();
+    renderMessages();
+    messageInput.focus({ preventScroll: true });
+  } catch (error) {
+    console.error("Sending message failed:", error);
+    showChatNotice(error.message || "Could not send message. Please try again.", "chat-notice error", false);
+  } finally {
+    submitButton.disabled = false;
+  }
 });
 
 backButton.addEventListener("click", () => {
@@ -307,6 +392,6 @@ document.addEventListener("keydown", (event) => {
 verifySession().then((isAuthenticated) => {
   if (isAuthenticated) {
     renderConversations();
-    renderMessages();
+    loadMessages(getActiveConversation());
   }
 });

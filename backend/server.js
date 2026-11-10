@@ -82,6 +82,96 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   return res.json({ user: req.authUser });
 });
 
+function isValidConversationId(value) {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
+}
+
+app.get("/api/messages", requireAuth, async (req, res) => {
+  const { conversationId } = req.query;
+  if (!isValidConversationId(conversationId)) {
+    return res.status(400).json({ error: "A valid conversationId is required." });
+  }
+
+  try {
+    const [messages] = await database.execute(
+      `SELECT recent.id, recent.conversation_id, recent.user_id, users.name AS sender,
+              recent.message, recent.created_at
+       FROM (
+         SELECT id, conversation_id, user_id, message, created_at
+         FROM chat_messages
+         WHERE conversation_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 200
+       ) AS recent
+       INNER JOIN users ON users.id = recent.user_id
+       ORDER BY recent.created_at ASC, recent.id ASC`,
+      [conversationId]
+    );
+
+    return res.json({
+      messages: messages.map((message) => ({
+        id: String(message.id),
+        conversationId: message.conversation_id,
+        userId: String(message.user_id),
+        sender: message.sender,
+        text: message.message,
+        createdAt: message.created_at
+      }))
+    });
+  } catch (error) {
+    console.error("Loading messages failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load messages."
+    });
+  }
+});
+
+app.post("/api/messages", requireAuth, async (req, res) => {
+  const { conversationId, message } = req.body || {};
+  if (!isValidConversationId(conversationId)) {
+    return res.status(400).json({ error: "A valid conversationId is required." });
+  }
+  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
+    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  }
+
+  try {
+    const [result] = await database.execute(
+      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
+      [conversationId, req.authUser.id, message.trim()]
+    );
+    const [messages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.id = ?`,
+      [result.insertId]
+    );
+    const savedMessage = messages[0];
+
+    return res.status(201).json({
+      message: {
+        id: String(savedMessage.id),
+        conversationId: savedMessage.conversation_id,
+        userId: String(savedMessage.user_id),
+        sender: savedMessage.sender,
+        text: savedMessage.message,
+        createdAt: savedMessage.created_at
+      }
+    });
+  } catch (error) {
+    console.error("Saving message failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to save the message."
+    });
+  }
+});
+
 app.post("/api/auth/signup", async (req, res) => {
   const { name, email, phone, password } = req.body || {};
 

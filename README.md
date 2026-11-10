@@ -10,7 +10,7 @@ Group Chat App
 ## Run locally
 
 1. Make sure Node.js 18+ and MySQL are installed and running.
-2. Create the database and users table by running `backend/schema.sql` in MySQL.
+2. Initialize the database tables by running `backend/schema.sql` in MySQL (or re-run it to add the chat message table to an existing database).
 3. In `backend/`, copy `.env.example` to `.env` and set your MySQL password.
 4. Set `JWT_SECRET` in `backend/.env` to a random secret of at least 32 characters. Generate one with:
    `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
@@ -28,5 +28,8 @@ Group Chat App
 - `POST /api/auth/signup` — `{ "name", "email", "phone", "password" }`
 - `POST /api/auth/login` — `{ "identifier", "password" }`, where identifier is an email or phone number
 - `GET /api/auth/me` — validates the `Authorization: Bearer <token>` header and returns the signed-in user
+- `GET /api/messages?conversationId=<id>` — returns up to 200 messages for a conversation (bearer token required)
+- `POST /api/messages` — saves `{ "conversationId", "message" }` for the authenticated user (bearer token required)
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
+Chat messages require the `chat_messages` table from `backend/schema.sql`; run that schema against the configured database before using chat.

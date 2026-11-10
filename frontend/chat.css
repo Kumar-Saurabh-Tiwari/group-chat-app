@@ -462,6 +462,22 @@ kbd {
   content: "";
 }
 
+.chat-notice {
+  margin: auto;
+  padding: 14px 18px;
+  border: 1px solid #eeedf2;
+  border-radius: 12px;
+  background: #fff;
+  color: #77768a;
+  font-size: 12px;
+  text-align: center;
+}
+
+.chat-notice.error {
+  border-color: #f0d7d9;
+  color: #a24952;
+}
+
 .message-row {
   display: flex;
   align-items: flex-end;
@@ -618,6 +634,11 @@ kbd {
 .send-button:hover {
   transform: translateY(-1px);
   background: #5849c7;
+}
+
+.send-button:disabled {
+  cursor: wait;
+  opacity: .65;
 }
 
 .send-button:focus-visible,

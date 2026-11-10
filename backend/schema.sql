@@ -15,3 +15,17 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE KEY users_email_unique (email),
   UNIQUE KEY users_phone_unique (phone)
 );
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  conversation_id VARCHAR(64) NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY chat_messages_conversation_created (conversation_id, created_at, id),
+  KEY chat_messages_user_created (user_id, created_at),
+  CONSTRAINT chat_messages_user_fk
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE
+);
