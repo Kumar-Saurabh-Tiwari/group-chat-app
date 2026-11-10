@@ -71,6 +71,11 @@ const personalChatForm = document.querySelector("#personal-chat-form");
 const personalChatEmail = document.querySelector("#personal-chat-email");
 const personalChatResults = document.querySelector("#personal-chat-results");
 const personalChatStatus = document.querySelector("#personal-chat-status");
+const createGroupForm = document.querySelector("#create-group-form");
+const groupNameInput = document.querySelector("#group-name");
+const joinGroupForm = document.querySelector("#join-group-form");
+const groupInviteCodeInput = document.querySelector("#group-invite-code");
+const groupChatStatus = document.querySelector("#group-chat-status");
 
 let activeConversationId = conversations[0].id;
 let currentUser = null;
@@ -79,6 +84,7 @@ let userSearchTimer = null;
 let userSearchController = null;
 let userSearchRequestId = 0;
 const personalConversations = [];
+const groupConversations = [];
 const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
 const messageIds = new Map(conversations.map((conversation) => [conversation.id, new Set()]));
 
@@ -109,6 +115,7 @@ function addMessage(conversation, message) {
   conversation.messages.push(message);
   conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${message.text}`;
   conversation.time = formatMessageTime(message.createdAt);
+  conversation.latestMessageAt = message.createdAt;
   return true;
 }
 
@@ -140,12 +147,30 @@ function joinActiveConversation() {
     return;
   }
 
+  if (conversation.isGroup) {
+    joinGroupConversation(conversation);
+    return;
+  }
+
   conversation.presenceKnown = false;
   chatSubtitle.textContent = "Checking who's here...";
   realtimeSocket.emit("conversation:join", { conversationId: activeConversationId }, (result) => {
     if (!result || !result.ok) {
       console.error("Could not join chat conversation:", result && result.error);
       chatSubtitle.textContent = "Live presence unavailable";
+      return;
+    }
+    updateConversationPresence(result.conversationId, result.onlineCount);
+  });
+}
+
+function joinGroupConversation(conversation) {
+  if (!realtimeSocket || !realtimeSocket.connected) return;
+  if (conversation.id === activeConversationId) chatSubtitle.textContent = "Joining group...";
+  realtimeSocket.emit("conversation:join", { conversationId: conversation.id }, (result) => {
+    if (!result || !result.ok) {
+      if (conversation.id === activeConversationId) chatSubtitle.textContent = "Unable to join this group";
+      console.error(`Could not join group "${conversation.name}":`, result && result.error);
       return;
     }
     updateConversationPresence(result.conversationId, result.onlineCount);
@@ -159,7 +184,9 @@ function updateConversationPresence(conversationId, onlineCount) {
   conversation.onlineCount = onlineCount;
   conversation.presenceKnown = true;
   if (conversation.id === activeConversationId) {
-    chatSubtitle.textContent = `${onlineCount} here now`;
+    chatSubtitle.textContent = conversation.isGroup
+      ? `${onlineCount} online · ${conversation.memberCount} members`
+      : `${onlineCount} here now`;
   }
 }
 
@@ -175,7 +202,12 @@ function connectRealtime() {
     auth: { token: sessionStorage.getItem("authToken") }
   });
 
-  realtimeSocket.on("connect", joinActiveConversation);
+  realtimeSocket.on("connect", () => {
+    joinActiveConversation();
+    groupConversations
+      .filter((conversation) => conversation.id !== activeConversationId)
+      .forEach(joinGroupConversation);
+  });
   realtimeSocket.on("conversation:presence", ({ conversationId, onlineCount } = {}) => {
     updateConversationPresence(conversationId, onlineCount);
   });
@@ -188,6 +220,7 @@ function connectRealtime() {
     const conversation = conversationsById.get(message.conversationId);
     if (!conversation || !addMessage(conversation, message)) return;
 
+    if (conversation.id !== activeConversationId) conversation.unread += 1;
     renderConversations();
     if (conversation.id === activeConversationId) renderMessages();
   });
@@ -257,7 +290,7 @@ function getActiveConversation() {
 }
 
 function getAllConversations() {
-  return [...conversations, ...personalConversations];
+  return [...conversations, ...personalConversations, ...groupConversations];
 }
 
 function getOrCreatePersonalConversation(id, user) {
@@ -266,7 +299,6 @@ function getOrCreatePersonalConversation(id, user) {
     if (!conversation.email && user.email) conversation.email = user.email;
     return conversation;
   }
-
   conversation = {
     id,
     name: user.name,
@@ -282,6 +314,42 @@ function getOrCreatePersonalConversation(id, user) {
     messages: []
   };
   personalConversations.push(conversation);
+  conversationsById.set(id, conversation);
+  messageIds.set(id, new Set());
+  return conversation;
+}
+
+function getOrCreateGroupConversation(group) {
+  const id = group.conversationId || `group:${group.id}`;
+  let conversation = conversationsById.get(id);
+  if (conversation) {
+    conversation.memberCount = group.memberCount;
+    conversation.inviteCode = group.inviteCode;
+    conversation.latestMessageAt = group.lastMessageAt || conversation.latestMessageAt;
+    if (group.lastMessage && conversation.messages.length === 0) {
+      conversation.preview = group.lastMessage;
+      conversation.time = formatMessageTime(group.lastMessageAt);
+    }
+    return conversation;
+  }
+
+  conversation = {
+    id,
+    groupId: String(group.id),
+    name: group.name,
+    initials: group.name.slice(0, 1).toUpperCase(),
+    color: "#d8d1fa",
+    textColor: "#574b91",
+    preview: group.lastMessage || "No messages yet",
+    time: group.lastMessageAt ? formatMessageTime(group.lastMessageAt) : "",
+    latestMessageAt: group.lastMessageAt || "",
+    unread: 0,
+    memberCount: group.memberCount,
+    inviteCode: group.inviteCode,
+    isGroup: true,
+    messages: []
+  };
+  groupConversations.push(conversation);
   conversationsById.set(id, conversation);
   messageIds.set(id, new Set());
   return conversation;
@@ -307,11 +375,11 @@ function renderConversations() {
     .sort((first, second) => {
       const firstLatest = first.messages.reduce(
         (latest, message) => Math.max(latest, new Date(message.createdAt).getTime() || 0),
-        0
+        new Date(first.latestMessageAt || 0).getTime() || 0
       );
       const secondLatest = second.messages.reduce(
         (latest, message) => Math.max(latest, new Date(message.createdAt).getTime() || 0),
-        0
+        new Date(second.latestMessageAt || 0).getTime() || 0
       );
       return secondLatest - firstLatest;
     });
@@ -434,9 +502,11 @@ function renderMessages() {
   chatTitle.textContent = conversation.name;
   chatSubtitle.textContent = conversation.isPersonal
     ? `Personal chat · ${conversation.email}`
-    : conversation.presenceKnown
-      ? `${conversation.onlineCount} here now`
-      : "Checking who's here...";
+    : conversation.isGroup
+      ? `${conversation.memberCount} members`
+      : conversation.presenceKnown
+        ? `${conversation.onlineCount} here now`
+        : "Checking who's here...";
   messageList.replaceChildren();
 
   if (conversation.messages.length === 0) {
@@ -584,6 +654,61 @@ async function loadPersonalMessages(conversation) {
   }
 }
 
+async function loadGroups() {
+  try {
+    const response = await fetch("/api/groups", {
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to load groups.");
+    result.groups.forEach((group) => getOrCreateGroupConversation(group));
+    renderConversations();
+  } catch (error) {
+    console.error("Loading groups failed:", error);
+    groupChatStatus.textContent = error.message || "Could not load groups.";
+  }
+}
+
+async function loadGroupMessages(conversation) {
+  try {
+    const response = await fetch(`/api/groups/${encodeURIComponent(conversation.groupId)}/messages`, {
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to load group messages.");
+    result.messages.forEach((message) => addMessage(conversation, message));
+    conversation.messages.sort((first, second) =>
+      new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
+    );
+    const latestMessage = conversation.messages.at(-1);
+    if (latestMessage) {
+      conversation.preview = `${latestMessage.sender}: ${latestMessage.text}`;
+      conversation.time = formatMessageTime(latestMessage.createdAt);
+      conversation.latestMessageAt = latestMessage.createdAt;
+    }
+
+    renderConversations();
+    if (conversation.id === activeConversationId) renderMessages();
+  } catch (error) {
+    console.error("Loading group messages failed:", error);
+    if (conversation.id === activeConversationId) {
+      showChatNotice(error.message || "Could not load group messages. Please try again.", "chat-notice error");
+    }
+  }
+}
+
 function selectConversation(id) {
   const previousConversationId = activeConversationId;
   const previousConversation = getActiveConversation();
@@ -593,7 +718,7 @@ function selectConversation(id) {
         recipientId: previousConversation.recipientId,
         roomId: previousConversation.id
       });
-    } else {
+    } else if (!previousConversation.isGroup) {
       realtimeSocket.emit("conversation:leave", { conversationId: previousConversationId });
     }
   }
@@ -609,11 +734,14 @@ function selectConversation(id) {
   chatTitle.textContent = conversation.name;
   chatSubtitle.textContent = conversation.isPersonal
     ? `Personal chat · ${conversation.email}`
-    : "Checking who's here...";
+    : conversation.isGroup
+      ? `${conversation.memberCount} members`
+      : "Checking who's here...";
   app.classList.add("show-conversation");
   renderMessages();
   joinActiveConversation();
   if (conversation.isPersonal) loadPersonalMessages(conversation);
+  if (conversation.isGroup) loadGroupMessages(conversation);
 }
 
 conversationList.addEventListener("click", (event) => {
@@ -714,6 +842,76 @@ personalChatForm.addEventListener("submit", (event) => {
   startPersonalChat(personalChatEmail.value.trim());
 });
 
+createGroupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = createGroupForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  groupChatStatus.textContent = "Creating group...";
+
+  try {
+    const response = await fetch("/api/groups", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+      },
+      body: JSON.stringify({ name: groupNameInput.value.trim() })
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to create group.");
+    const conversation = getOrCreateGroupConversation(result.group);
+    createGroupForm.reset();
+    groupChatStatus.textContent = `Group created. Share invite code: ${result.group.inviteCode}`;
+    selectConversation(conversation.id);
+  } catch (error) {
+    groupChatStatus.textContent = error.message || "Could not create group.";
+    console.error("Creating group failed:", error);
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+
+joinGroupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = joinGroupForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  groupChatStatus.textContent = "Joining group...";
+
+  try {
+    const response = await fetch("/api/groups/join", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+      },
+      body: JSON.stringify({ inviteCode: groupInviteCodeInput.value.trim() })
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to join group.");
+    const conversation = getOrCreateGroupConversation(result.group);
+    joinGroupForm.reset();
+    groupChatStatus.textContent = `Joined ${result.group.name}.`;
+    selectConversation(conversation.id);
+  } catch (error) {
+    groupChatStatus.textContent = error.message || "Could not join group.";
+    console.error("Joining group failed:", error);
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+
 messageInput.addEventListener("input", () => {
   messageInput.style.height = "auto";
   messageInput.style.height = `${Math.min(messageInput.scrollHeight, 110)}px`;
@@ -770,6 +968,41 @@ messageForm.addEventListener("submit", async (event) => {
     return;
   }
 
+  if (conversation.isGroup) {
+    try {
+      const response = await fetch(`/api/groups/${encodeURIComponent(conversation.groupId)}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+        },
+        body: JSON.stringify({ message: text })
+      });
+
+      if (response.status === 401) {
+        sessionStorage.removeItem("authToken");
+        window.location.replace("auth/login.html");
+        return;
+      }
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to send group message.");
+
+      addMessage(conversation, result.message);
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+      renderConversations();
+      renderMessages();
+      messageInput.focus({ preventScroll: true });
+    } catch (error) {
+      console.error("Sending group message failed:", error);
+      showChatNotice(error.message || "Could not send group message. Please try again.", "chat-notice error", false);
+    } finally {
+      submitButton.disabled = false;
+    }
+    return;
+  }
+
   try {
     const response = await fetch("/api/messages", {
       method: "POST",
@@ -817,8 +1050,7 @@ document.addEventListener("keydown", (event) => {
 verifySession().then((isAuthenticated) => {
   if (isAuthenticated) {
     renderConversations();
-    connectRealtime();
-    loadMessages();
-    loadPersonalConversations();
+    Promise.all([loadMessages(), loadPersonalConversations(), loadGroups()])
+      .then(connectRealtime);
   }
 });

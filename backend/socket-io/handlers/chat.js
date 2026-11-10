@@ -14,7 +14,7 @@ function acknowledge(callback, result) {
   if (typeof callback === "function") callback(result);
 }
 
-function registerChatHandlers(io, socket, isValidConversationId) {
+function registerChatHandlers(io, socket, isValidConversationId, isAuthorizedConversation) {
   const expiresAt = socket.data.tokenExpiresAt;
   if (expiresAt) {
     socket.data.sessionExpiryTimeout = setTimeout(() => {
@@ -31,6 +31,10 @@ function registerChatHandlers(io, socket, isValidConversationId) {
     }
 
     try {
+      if (!(await isAuthorizedConversation(socket.data.user.id, conversationId))) {
+        acknowledge(callback, { ok: false, error: "Join this group before entering its room." });
+        return;
+      }
       await socket.join(roomName(conversationId));
       const onlineCount = await updatePresence(io, conversationId);
       acknowledge(callback, { ok: true, conversationId, onlineCount });

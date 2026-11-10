@@ -1,5 +1,6 @@
 const path = require("path");
 const http = require("http");
+const { randomBytes } = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 const bcrypt = require("bcryptjs");
 const express = require("express");
@@ -230,7 +231,25 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
 });
 
 function isValidConversationId(value) {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
+  return value === "weekend" ||
+    value === "design" ||
+    value === "family" ||
+    value === "hikes" ||
+    isGroupConversationId(value);
+}
+
+function isGroupConversationId(value) {
+  return typeof value === "string" && /^group:[1-9][0-9]{0,19}$/.test(value);
+}
+
+async function isAuthorizedConversation(userId, conversationId) {
+  if (!isValidConversationId(conversationId)) return false;
+  if (!isGroupConversationId(conversationId)) return true;
+  return isGroupMember(conversationId.slice("group:".length), userId);
+}
+
+function groupConversationId(groupId) {
+  return `group:${groupId}`;
 }
 
 async function isValidRecipientId(userId) {
@@ -238,10 +257,258 @@ async function isValidRecipientId(userId) {
   return users.length > 0;
 }
 
+async function isGroupMember(groupId, userId) {
+  const [memberships] = await database.execute(
+    "SELECT 1 FROM chat_group_members WHERE group_id = ? AND user_id = ? LIMIT 1",
+    [groupId, userId]
+  );
+  return memberships.length > 0;
+}
+
+app.get("/api/groups", requireAuth, async (req, res) => {
+  try {
+    const [groups] = await database.execute(
+      `SELECT chat_groups.id, chat_groups.name, chat_groups.invite_code, chat_groups.created_at,
+              (SELECT COUNT(*) FROM chat_group_members AS members
+               WHERE members.group_id = chat_groups.id) AS member_count,
+              (SELECT messages.message FROM chat_messages AS messages
+               WHERE messages.conversation_id = CONCAT('group:', chat_groups.id)
+               ORDER BY messages.created_at DESC, messages.id DESC LIMIT 1) AS last_message,
+              (SELECT messages.created_at FROM chat_messages AS messages
+               WHERE messages.conversation_id = CONCAT('group:', chat_groups.id)
+               ORDER BY messages.created_at DESC, messages.id DESC LIMIT 1) AS last_message_at
+       FROM chat_groups
+       INNER JOIN chat_group_members
+         ON chat_group_members.group_id = chat_groups.id
+       WHERE chat_group_members.user_id = ?
+       ORDER BY chat_groups.created_at DESC, chat_groups.id DESC`,
+      [req.authUser.id]
+    );
+
+    return res.json({
+      groups: groups.map((group) => ({
+        id: String(group.id),
+        conversationId: groupConversationId(String(group.id)),
+        name: group.name,
+        inviteCode: group.invite_code,
+        memberCount: Number(group.member_count),
+        lastMessage: group.last_message,
+        lastMessageAt: group.last_message_at || group.created_at
+      }))
+    });
+  } catch (error) {
+    console.error("Loading groups failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load groups."
+    });
+  }
+});
+
+app.post("/api/groups", requireAuth, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name || name.length > 100) {
+    return res.status(400).json({ error: "Group name must be between 1 and 100 characters." });
+  }
+
+  const inviteCode = randomBytes(8).toString("hex").toUpperCase();
+  let connection;
+  try {
+    connection = await database.getConnection();
+    await connection.beginTransaction();
+    const [result] = await connection.execute(
+      "INSERT INTO chat_groups (name, invite_code, created_by) VALUES (?, ?, ?)",
+      [name, inviteCode, req.authUser.id]
+    );
+    await connection.execute(
+      "INSERT INTO chat_group_members (group_id, user_id) VALUES (?, ?)",
+      [result.insertId, req.authUser.id]
+    );
+    await connection.commit();
+
+    const id = String(result.insertId);
+    return res.status(201).json({
+      group: {
+        id,
+        conversationId: groupConversationId(id),
+        name,
+        inviteCode,
+        memberCount: 1,
+        lastMessage: null,
+        lastMessageAt: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Creating group failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to create the group."
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.post("/api/groups/join", requireAuth, async (req, res) => {
+  const inviteCode = typeof req.body?.inviteCode === "string"
+    ? req.body.inviteCode.trim().toUpperCase()
+    : "";
+  if (!/^[A-F0-9]{16}$/.test(inviteCode)) {
+    return res.status(400).json({ error: "Enter a valid 16-character invite code." });
+  }
+
+  let connection;
+  try {
+    connection = await database.getConnection();
+    await connection.beginTransaction();
+    const [groups] = await connection.execute(
+      `SELECT chat_groups.id, chat_groups.name, chat_groups.invite_code, chat_groups.created_at,
+              (SELECT COUNT(*) FROM chat_group_members AS members
+               WHERE members.group_id = chat_groups.id) AS member_count
+       FROM chat_groups WHERE chat_groups.invite_code = ? LIMIT 1`,
+      [inviteCode]
+    );
+    const group = groups[0];
+    if (!group) {
+      await connection.rollback();
+      return res.status(404).json({ error: "No group was found with that invite code." });
+    }
+
+    await connection.execute(
+      "INSERT IGNORE INTO chat_group_members (group_id, user_id) VALUES (?, ?)",
+      [group.id, req.authUser.id]
+    );
+    const [memberCounts] = await connection.execute(
+      "SELECT COUNT(*) AS member_count FROM chat_group_members WHERE group_id = ?",
+      [group.id]
+    );
+    await connection.commit();
+
+    const id = String(group.id);
+    return res.json({
+      group: {
+        id,
+        conversationId: groupConversationId(id),
+        name: group.name,
+        inviteCode: group.invite_code,
+        memberCount: Number(memberCounts[0].member_count),
+        lastMessage: null,
+        lastMessageAt: group.created_at
+      }
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Joining group failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to join the group."
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.get("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
+  const { groupId } = req.params;
+  if (!/^[1-9][0-9]{0,19}$/.test(groupId)) {
+    return res.status(400).json({ error: "A valid group ID is required." });
+  }
+
+  try {
+    if (!(await isGroupMember(groupId, req.authUser.id))) {
+      return res.status(403).json({ error: "Join this group before viewing its messages." });
+    }
+
+    const [messages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.conversation_id = ?
+       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      [groupConversationId(groupId)]
+    );
+    return res.json({
+      messages: messages.map((message) => ({
+        id: String(message.id),
+        conversationId: message.conversation_id,
+        userId: String(message.user_id),
+        sender: message.sender,
+        text: message.message,
+        createdAt: message.created_at
+      }))
+    });
+  } catch (error) {
+    console.error("Loading group messages failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load group messages."
+    });
+  }
+});
+
+app.post("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
+  const { groupId } = req.params;
+  const { message } = req.body || {};
+  if (!/^[1-9][0-9]{0,19}$/.test(groupId)) {
+    return res.status(400).json({ error: "A valid group ID is required." });
+  }
+  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
+    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  }
+
+  try {
+    if (!(await isGroupMember(groupId, req.authUser.id))) {
+      return res.status(403).json({ error: "Join this group before sending messages." });
+    }
+
+    const conversationId = groupConversationId(groupId);
+    const [result] = await database.execute(
+      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
+      [conversationId, req.authUser.id, message.trim()]
+    );
+    const [savedMessages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.id = ?`,
+      [result.insertId]
+    );
+    const savedMessage = savedMessages[0];
+    const responseMessage = {
+      id: String(savedMessage.id),
+      conversationId: savedMessage.conversation_id,
+      userId: String(savedMessage.user_id),
+      sender: savedMessage.sender,
+      text: savedMessage.message,
+      createdAt: savedMessage.created_at
+    };
+
+    chatRealtime.publishMessage(responseMessage);
+    return res.status(201).json({ message: responseMessage });
+  } catch (error) {
+    console.error("Saving group message failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to save the group message."
+    });
+  }
+});
+
 app.get("/api/messages", requireAuth, async (req, res) => {
   const { conversationId } = req.query;
-  if (conversationId !== undefined && !isValidConversationId(conversationId)) {
-    return res.status(400).json({ error: "A valid conversationId is required." });
+  if (
+    conversationId !== undefined &&
+    (!isValidConversationId(conversationId) || isGroupConversationId(conversationId))
+  ) {
+    return res.status(400).json({ error: "A valid non-group conversationId is required." });
   }
 
   try {
@@ -251,6 +518,7 @@ app.get("/api/messages", requireAuth, async (req, res) => {
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.conversation_id NOT LIKE 'personal:%'
+         AND chat_messages.conversation_id NOT LIKE 'group:%'
        ${conversationId === undefined ? "" : "AND chat_messages.conversation_id = ?"}
        ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
       conversationId === undefined ? [] : [conversationId]
@@ -278,8 +546,8 @@ app.get("/api/messages", requireAuth, async (req, res) => {
 
 app.post("/api/messages", requireAuth, async (req, res) => {
   const { conversationId, message } = req.body || {};
-  if (!isValidConversationId(conversationId)) {
-    return res.status(400).json({ error: "A valid conversationId is required." });
+  if (!isValidConversationId(conversationId) || isGroupConversationId(conversationId)) {
+    return res.status(400).json({ error: "A valid non-group conversationId is required." });
   }
   if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
     return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
@@ -553,6 +821,7 @@ const chatRealtime = createSocketServer({
   server,
   jwtSecret,
   isValidConversationId,
+  isAuthorizedConversation,
   isValidRecipientId
 });
 

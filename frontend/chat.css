@@ -275,6 +275,61 @@ a {
   font-size: 10px;
 }
 
+.group-chat-tools {
+  display: grid;
+  gap: 12px;
+  margin: 0 18px 16px;
+}
+
+.group-chat-tools form {
+  display: grid;
+  gap: 7px;
+}
+
+.group-chat-tools label {
+  color: #77768a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.group-chat-tools input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid #efeff4;
+  border-radius: 8px;
+  outline: 0;
+  background: #fafafd;
+  color: #3b3b4e;
+  font-size: 11px;
+}
+
+.group-chat-tools input:focus {
+  border-color: #b8b0f2;
+  box-shadow: 0 0 0 3px rgba(103, 88, 216, .1);
+}
+
+.group-chat-tools button {
+  flex: 0 0 auto;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--purple);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+#group-chat-status {
+  min-height: 12px;
+  margin: 0;
+  color: #77768a;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
 .inbox-count {
   padding-bottom: 4px;
   color: #a3a2b1;
