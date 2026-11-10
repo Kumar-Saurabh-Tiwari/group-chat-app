@@ -6,6 +6,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
 const createSocketServer = require("./socket-io");
+const personalRoomId = require("./socket-io/personal-room");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -84,8 +85,157 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   return res.json({ user: req.authUser });
 });
 
+app.get("/api/users/lookup", requireAuth, async (req, res) => {
+  const email = typeof req.query.email === "string" ? normalizeEmail(req.query.email) : "";
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: "Enter a valid email address." });
+  }
+
+  try {
+    const [users] = await database.execute(
+      "SELECT id, name, email FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+    const user = users[0];
+    if (!user || String(user.id) === String(req.authUser.id)) {
+      return res.status(404).json({ error: "No other account was found with that email." });
+    }
+
+    const id = String(user.id);
+    return res.json({
+      user: { id, name: user.name, email: user.email },
+      roomId: personalRoomId(req.authUser.id, id)
+    });
+  } catch (error) {
+    console.error("Looking up chat user failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to look up that user."
+    });
+  }
+});
+
+app.get("/api/users/search", requireAuth, async (req, res) => {
+  const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (query.length > 100) {
+    return res.status(400).json({ error: "Search text must be 100 characters or fewer." });
+  }
+  if (query.length < 2) return res.json({ users: [] });
+
+  try {
+    const searchTerm = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const [users] = await database.execute(
+      `SELECT id, name, email FROM users
+       WHERE id <> ? AND (name LIKE ? OR email LIKE ?)
+       ORDER BY name ASC
+       LIMIT 8`,
+      [req.authUser.id, searchTerm, searchTerm]
+    );
+
+    return res.json({
+      users: users.map((user) => ({
+        id: String(user.id),
+        name: user.name,
+        email: user.email
+      }))
+    });
+  } catch (error) {
+    console.error("Searching chat users failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to search for users."
+    });
+  }
+});
+
+app.get("/api/personal-conversations", requireAuth, async (req, res) => {
+  const userId = String(req.authUser.id);
+
+  try {
+    const [conversationRows] = await database.execute(
+      `SELECT DISTINCT conversation_id
+       FROM chat_messages
+       WHERE conversation_id LIKE ? OR conversation_id LIKE ?
+       ORDER BY conversation_id`,
+      [`personal:${userId}:%`, `personal:%:${userId}`]
+    );
+    const conversations = conversationRows
+      .map(({ conversation_id: conversationId }) => {
+        const match = /^personal:(\d{1,20}):(\d{1,20})$/.exec(conversationId);
+        if (!match || (match[1] !== userId && match[2] !== userId)) return null;
+        return {
+          id: conversationId,
+          recipientId: match[1] === userId ? match[2] : match[1]
+        };
+      })
+      .filter(Boolean);
+
+    if (conversations.length === 0) return res.json({ conversations: [] });
+
+    const recipientIds = [...new Set(conversations.map(({ recipientId }) => recipientId))];
+    const placeholders = recipientIds.map(() => "?").join(", ");
+    const [users] = await database.execute(
+      `SELECT id, name, email FROM users WHERE id IN (${placeholders})`,
+      recipientIds
+    );
+    const usersById = new Map(users.map((user) => [String(user.id), user]));
+    const availableConversations = conversations.filter(({ recipientId }) => usersById.has(recipientId));
+    const roomIds = availableConversations.map(({ id }) => id);
+    if (roomIds.length === 0) return res.json({ conversations: [] });
+
+    const roomPlaceholders = roomIds.map(() => "?").join(", ");
+    const [messages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, users.email AS sender_email,
+              chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.conversation_id IN (${roomPlaceholders})
+       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      roomIds
+    );
+    const messagesByRoom = new Map(roomIds.map((roomId) => [roomId, []]));
+    messages.forEach((message) => {
+      messagesByRoom.get(message.conversation_id).push({
+        id: String(message.id),
+        conversationId: message.conversation_id,
+        userId: String(message.user_id),
+        sender: message.sender,
+        senderEmail: message.sender_email,
+        text: message.message,
+        createdAt: message.created_at
+      });
+    });
+
+    return res.json({
+      conversations: availableConversations.map(({ id, recipientId }) => {
+        const user = usersById.get(recipientId);
+        return {
+          id,
+          user: { id: recipientId, name: user.name, email: user.email },
+          messages: messagesByRoom.get(id)
+        };
+      })
+    });
+  } catch (error) {
+    console.error("Loading personal conversations failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load personal conversations."
+    });
+  }
+});
+
 function isValidConversationId(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
+}
+
+async function isValidRecipientId(userId) {
+  const [users] = await database.execute("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]);
+  return users.length > 0;
 }
 
 app.get("/api/messages", requireAuth, async (req, res) => {
@@ -100,7 +250,8 @@ app.get("/api/messages", requireAuth, async (req, res) => {
               users.name AS sender, chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
-       ${conversationId === undefined ? "" : "WHERE chat_messages.conversation_id = ?"}
+       WHERE chat_messages.conversation_id NOT LIKE 'personal:%'
+       ${conversationId === undefined ? "" : "AND chat_messages.conversation_id = ?"}
        ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
       conversationId === undefined ? [] : [conversationId]
     );
@@ -166,6 +317,108 @@ app.post("/api/messages", requireAuth, async (req, res) => {
       error: isDatabaseUnavailable(error)
         ? "The database is unavailable. Check the backend database settings."
         : "Unable to save the message."
+    });
+  }
+});
+
+app.get("/api/personal-messages", requireAuth, async (req, res) => {
+  const recipientId = typeof req.query.recipientId === "string" ? req.query.recipientId : "";
+  if (
+    !/^[0-9]{1,20}$/.test(recipientId) ||
+    recipientId === String(req.authUser.id)
+  ) {
+    return res.status(400).json({ error: "A valid other recipient ID is required." });
+  }
+
+  try {
+    if (!(await isValidRecipientId(recipientId))) {
+      return res.status(404).json({ error: "The recipient account was not found." });
+    }
+
+    const conversationId = personalRoomId(req.authUser.id, recipientId);
+    const [messages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, users.email AS sender_email,
+              chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.conversation_id = ?
+       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      [conversationId]
+    );
+
+    return res.json({
+      messages: messages.map((message) => ({
+        id: String(message.id),
+        conversationId: message.conversation_id,
+        userId: String(message.user_id),
+        sender: message.sender,
+        senderEmail: message.sender_email,
+        text: message.message,
+        createdAt: message.created_at
+      }))
+    });
+  } catch (error) {
+    console.error("Loading personal messages failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load personal messages."
+    });
+  }
+});
+
+app.post("/api/personal-messages", requireAuth, async (req, res) => {
+  const { recipientId, message } = req.body || {};
+  if (
+    typeof recipientId !== "string" ||
+    !/^[0-9]{1,20}$/.test(recipientId) ||
+    recipientId === String(req.authUser.id)
+  ) {
+    return res.status(400).json({ error: "A valid other recipient ID is required." });
+  }
+  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
+    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  }
+
+  try {
+    if (!(await isValidRecipientId(recipientId))) {
+      return res.status(404).json({ error: "The recipient account was not found." });
+    }
+
+    const conversationId = personalRoomId(req.authUser.id, recipientId);
+    const [result] = await database.execute(
+      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
+      [conversationId, req.authUser.id, message.trim()]
+    );
+    const [messages] = await database.execute(
+      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+              users.name AS sender, users.email AS sender_email,
+              chat_messages.message, chat_messages.created_at
+       FROM chat_messages
+       INNER JOIN users ON users.id = chat_messages.user_id
+       WHERE chat_messages.id = ?`,
+      [result.insertId]
+    );
+    const savedMessage = messages[0];
+    const responseMessage = {
+      id: String(savedMessage.id),
+      conversationId: savedMessage.conversation_id,
+      userId: String(savedMessage.user_id),
+      sender: savedMessage.sender,
+      senderEmail: savedMessage.sender_email,
+      text: savedMessage.message,
+      createdAt: savedMessage.created_at
+    };
+
+    chatRealtime.publishPersonalMessage(responseMessage, recipientId);
+    return res.status(201).json({ message: responseMessage });
+  } catch (error) {
+    console.error("Saving personal message failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to save the personal message."
     });
   }
 });
@@ -299,7 +552,8 @@ const server = http.createServer(app);
 const chatRealtime = createSocketServer({
   server,
   jwtSecret,
-  isValidConversationId
+  isValidConversationId,
+  isValidRecipientId
 });
 
 server.listen(port, () => {

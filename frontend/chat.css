@@ -157,6 +157,124 @@ a {
   letter-spacing: -.8px;
 }
 
+.personal-chat-form {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  margin: 0 18px 18px;
+}
+
+.personal-chat-form > label {
+  color: #77768a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.personal-chat-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.personal-chat-controls input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid #efeff4;
+  border-radius: 8px;
+  outline: 0;
+  background: #fafafd;
+  color: #3b3b4e;
+  font-size: 11px;
+}
+
+.personal-chat-controls input:focus {
+  border-color: #b8b0f2;
+  box-shadow: 0 0 0 3px rgba(103, 88, 216, .1);
+}
+
+.personal-chat-controls button {
+  flex: 0 0 auto;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--purple);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.personal-chat-controls button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.personal-chat-results {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% - 25px);
+  right: 0;
+  left: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #efeff4;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(39, 37, 76, .14);
+}
+
+.personal-chat-results[hidden] {
+  display: none;
+}
+
+.personal-chat-result {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid #f1f0f5;
+  background: transparent;
+  color: #3b3b4e;
+  cursor: pointer;
+  text-align: left;
+}
+
+.personal-chat-result:last-child {
+  border-bottom: 0;
+}
+
+.personal-chat-result:hover,
+.personal-chat-result:focus-visible {
+  outline: 0;
+  background: #f7f6fd;
+}
+
+.personal-chat-result-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.personal-chat-result-email {
+  color: #858497;
+  font-size: 10px;
+}
+
+.personal-chat-empty {
+  margin: 0;
+  padding: 11px 12px;
+  color: #77768a;
+  font-size: 11px;
+}
+
+#personal-chat-status {
+  min-height: 12px;
+  margin: 0;
+  color: #77768a;
+  font-size: 10px;
+}
+
 .inbox-count {
   padding-bottom: 4px;
   color: #a3a2b1;

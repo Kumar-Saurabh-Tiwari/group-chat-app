@@ -67,10 +67,18 @@ const messageInput = document.querySelector("#message-input");
 const backButton = document.querySelector("#back-button");
 const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
+const personalChatForm = document.querySelector("#personal-chat-form");
+const personalChatEmail = document.querySelector("#personal-chat-email");
+const personalChatResults = document.querySelector("#personal-chat-results");
+const personalChatStatus = document.querySelector("#personal-chat-status");
 
 let activeConversationId = conversations[0].id;
 let currentUser = null;
 let realtimeSocket = null;
+let userSearchTimer = null;
+let userSearchController = null;
+let userSearchRequestId = 0;
+const personalConversations = [];
 const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
 const messageIds = new Map(conversations.map((conversation) => [conversation.id, new Set()]));
 
@@ -107,6 +115,31 @@ function addMessage(conversation, message) {
 function joinActiveConversation() {
   if (!realtimeSocket || !realtimeSocket.connected) return;
   const conversation = getActiveConversation();
+  if (conversation.isPersonal) {
+    chatSubtitle.textContent = "Connecting to personal chat...";
+    realtimeSocket.emit("join_room", {
+      recipientId: conversation.recipientId,
+      roomId: conversation.id
+    }, (result) => {
+      if (activeConversationId !== conversation.id) {
+        if (result && result.ok) {
+          realtimeSocket.emit("leave_room", {
+            recipientId: conversation.recipientId,
+            roomId: conversation.id
+          });
+        }
+        return;
+      }
+      if (!result || !result.ok) {
+        chatSubtitle.textContent = "Personal chat unavailable";
+        console.error("Could not join personal chat:", result && result.error);
+        return;
+      }
+      chatSubtitle.textContent = `Personal chat · ${conversation.email}`;
+    });
+    return;
+  }
+
   conversation.presenceKnown = false;
   chatSubtitle.textContent = "Checking who's here...";
   realtimeSocket.emit("conversation:join", { conversationId: activeConversationId }, (result) => {
@@ -158,6 +191,21 @@ function connectRealtime() {
     renderConversations();
     if (conversation.id === activeConversationId) renderMessages();
   });
+  realtimeSocket.on("new_message", (message) => {
+    let conversation = conversationsById.get(message.conversationId);
+    if (!conversation && message.userId !== currentUser.id && message.sender) {
+      conversation = getOrCreatePersonalConversation(message.conversationId, {
+        id: message.userId,
+        name: message.sender,
+        email: message.senderEmail || ""
+      });
+    }
+    if (!conversation || !conversation.isPersonal || !addMessage(conversation, message)) return;
+
+    if (conversation.id !== activeConversationId) conversation.unread += 1;
+    renderConversations();
+    if (conversation.id === activeConversationId) renderMessages();
+  });
   realtimeSocket.on("connect_error", (error) => {
     if (error.data && error.data.code === "AUTHENTICATION_ERROR") {
       sessionStorage.removeItem("authToken");
@@ -205,7 +253,38 @@ async function verifySession() {
 }
 
 function getActiveConversation() {
-  return conversations.find((conversation) => conversation.id === activeConversationId);
+  return conversationsById.get(activeConversationId);
+}
+
+function getAllConversations() {
+  return [...conversations, ...personalConversations];
+}
+
+function getOrCreatePersonalConversation(id, user) {
+  let conversation = conversationsById.get(id);
+  if (conversation) {
+    if (!conversation.email && user.email) conversation.email = user.email;
+    return conversation;
+  }
+
+  conversation = {
+    id,
+    name: user.name,
+    email: user.email,
+    recipientId: user.id,
+    initials: user.name.slice(0, 1).toUpperCase(),
+    color: "#d8d1fa",
+    textColor: "#574b91",
+    preview: "Personal chat",
+    time: "",
+    unread: 0,
+    isPersonal: true,
+    messages: []
+  };
+  personalConversations.push(conversation);
+  conversationsById.set(id, conversation);
+  messageIds.set(id, new Set());
+  return conversation;
 }
 
 function makeAvatar(initials, background, color, className) {
@@ -219,11 +298,13 @@ function makeAvatar(initials, background, color, className) {
 
 function renderConversations() {
   const query = conversationSearch.value.trim().toLowerCase();
-  const filtered = conversations.filter((conversation) =>
-    conversation.name.toLowerCase().includes(query)
+  const allConversations = getAllConversations();
+  const filtered = allConversations.filter((conversation) =>
+    conversation.name.toLowerCase().includes(query) ||
+    (conversation.email && conversation.email.toLowerCase().includes(query))
   );
   conversationList.replaceChildren();
-  inboxCount.textContent = `${conversations.length} conversations`;
+  inboxCount.textContent = `${allConversations.length} conversations`;
 
   if (filtered.length === 0) {
     const empty = document.createElement("p");
@@ -273,6 +354,27 @@ function renderConversations() {
   });
 }
 
+function renderPersonalChatResults(users) {
+  personalChatResults.replaceChildren();
+  personalChatResults.hidden = users.length === 0;
+  users.forEach((user) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "personal-chat-result";
+    option.role = "option";
+    option.dataset.email = user.email;
+
+    const name = document.createElement("span");
+    name.className = "personal-chat-result-name";
+    name.textContent = user.name;
+    const email = document.createElement("span");
+    email.className = "personal-chat-result-email";
+    email.textContent = user.email;
+    option.append(name, email);
+    personalChatResults.append(option);
+  });
+}
+
 function createMessage(message) {
   const row = document.createElement("article");
   const outgoing = message.userId === currentUser.id;
@@ -318,9 +420,11 @@ function renderMessages() {
   chatAvatar.style.backgroundColor = conversation.color;
   chatAvatar.style.color = conversation.textColor;
   chatTitle.textContent = conversation.name;
-  chatSubtitle.textContent = conversation.presenceKnown
-    ? `${conversation.onlineCount} here now`
-    : "Checking who's here...";
+  chatSubtitle.textContent = conversation.isPersonal
+    ? `Personal chat · ${conversation.email}`
+    : conversation.presenceKnown
+      ? `${conversation.onlineCount} here now`
+      : "Checking who's here...";
   messageList.replaceChildren();
 
   if (conversation.messages.length === 0) {
@@ -399,24 +503,105 @@ async function loadMessages() {
   }
 }
 
+async function loadPersonalConversations() {
+  try {
+    const response = await fetch("/api/personal-conversations", {
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to load personal conversations.");
+
+    result.conversations.forEach(({ id, user, messages }) => {
+      const conversation = getOrCreatePersonalConversation(id, user);
+      messages.forEach((message) => addMessage(conversation, message));
+      conversation.messages.sort((first, second) =>
+        new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
+      );
+      const latestMessage = conversation.messages.at(-1);
+      if (latestMessage) {
+        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+        conversation.time = formatMessageTime(latestMessage.createdAt);
+      }
+    });
+
+    renderConversations();
+    if (getActiveConversation().isPersonal) renderMessages();
+  } catch (error) {
+    console.error("Loading personal conversations failed:", error);
+    personalChatStatus.textContent = error.message || "Could not load personal conversations.";
+  }
+}
+
+async function loadPersonalMessages(conversation) {
+  try {
+    const response = await fetch(
+      `/api/personal-messages?recipientId=${encodeURIComponent(conversation.recipientId)}`,
+      { headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` } }
+    );
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to load personal messages.");
+    result.messages.forEach((message) => addMessage(conversation, message));
+    conversation.messages.sort((first, second) =>
+      new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
+    );
+    const latestMessage = conversation.messages.at(-1);
+    if (latestMessage) {
+      conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+      conversation.time = formatMessageTime(latestMessage.createdAt);
+    }
+
+    renderConversations();
+    if (conversation.id === activeConversationId) renderMessages();
+  } catch (error) {
+    console.error("Loading personal messages failed:", error);
+    if (conversation.id === activeConversationId) {
+      showChatNotice(error.message || "Could not load personal messages. Please try again.", "chat-notice error");
+    }
+  }
+}
+
 function selectConversation(id) {
   const previousConversationId = activeConversationId;
+  const previousConversation = getActiveConversation();
+  if (realtimeSocket && realtimeSocket.connected && previousConversationId !== id) {
+    if (previousConversation.isPersonal) {
+      realtimeSocket.emit("leave_room", {
+        recipientId: previousConversation.recipientId,
+        roomId: previousConversation.id
+      });
+    } else {
+      realtimeSocket.emit("conversation:leave", { conversationId: previousConversationId });
+    }
+  }
+
   activeConversationId = id;
   const conversation = getActiveConversation();
   conversation.unread = 0;
   conversation.presenceKnown = false;
-  if (realtimeSocket && realtimeSocket.connected && previousConversationId !== id) {
-    realtimeSocket.emit("conversation:leave", { conversationId: previousConversationId });
-  }
   renderConversations();
   chatAvatar.textContent = conversation.initials;
   chatAvatar.style.backgroundColor = conversation.color;
   chatAvatar.style.color = conversation.textColor;
   chatTitle.textContent = conversation.name;
-  chatSubtitle.textContent = "Checking who's here...";
+  chatSubtitle.textContent = conversation.isPersonal
+    ? `Personal chat · ${conversation.email}`
+    : "Checking who's here...";
   app.classList.add("show-conversation");
   renderMessages();
   joinActiveConversation();
+  if (conversation.isPersonal) loadPersonalMessages(conversation);
 }
 
 conversationList.addEventListener("click", (event) => {
@@ -425,6 +610,97 @@ conversationList.addEventListener("click", (event) => {
 });
 
 conversationSearch.addEventListener("input", renderConversations);
+
+personalChatEmail.addEventListener("input", () => {
+  clearTimeout(userSearchTimer);
+  if (userSearchController) userSearchController.abort();
+
+  const query = personalChatEmail.value.trim();
+  personalChatResults.replaceChildren();
+  personalChatResults.hidden = true;
+  personalChatStatus.textContent = "";
+  if (query.length < 2) return;
+
+  const requestId = ++userSearchRequestId;
+  userSearchTimer = setTimeout(async () => {
+    userSearchController = new AbortController();
+    personalChatStatus.textContent = "Searching...";
+    try {
+      const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`, {
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` },
+        signal: userSearchController.signal
+      });
+      if (response.status === 401) {
+        sessionStorage.removeItem("authToken");
+        window.location.replace("auth/login.html");
+        return;
+      }
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to search for users.");
+      if (requestId !== userSearchRequestId) return;
+
+      if (result.users.length === 0) {
+        personalChatStatus.textContent = "No matching users.";
+        return;
+      }
+      renderPersonalChatResults(result.users);
+      personalChatStatus.textContent = "";
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      if (requestId === userSearchRequestId) {
+        personalChatStatus.textContent = error.message || "Could not search for users.";
+        console.error("Searching chat users failed:", error);
+      }
+    }
+  }, 250);
+});
+
+async function startPersonalChat(email) {
+  const submitButton = personalChatForm.querySelector('button[type="submit"]');
+  if (userSearchController) userSearchController.abort();
+  clearTimeout(userSearchTimer);
+  personalChatResults.replaceChildren();
+  personalChatResults.hidden = true;
+  submitButton.disabled = true;
+  personalChatStatus.textContent = "Looking up account...";
+
+  try {
+    const response = await fetch(`/api/users/lookup?email=${encodeURIComponent(email)}`, {
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("authToken")}` }
+    });
+    const result = await response.json();
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      return;
+    }
+    if (!response.ok) throw new Error(result.error || "Unable to find that user.");
+
+    const conversation = getOrCreatePersonalConversation(result.roomId, result.user);
+
+    personalChatStatus.textContent = "";
+    personalChatForm.reset();
+    selectConversation(conversation.id);
+  } catch (error) {
+    personalChatStatus.textContent = error.message || "Could not start personal chat.";
+    console.error("Starting personal chat failed:", error);
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
+personalChatResults.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-email]");
+  if (!option) return;
+  personalChatEmail.value = option.dataset.email;
+  startPersonalChat(option.dataset.email);
+});
+
+personalChatForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  startPersonalChat(personalChatEmail.value.trim());
+});
 
 messageInput.addEventListener("input", () => {
   messageInput.style.height = "auto";
@@ -446,6 +722,41 @@ messageForm.addEventListener("submit", async (event) => {
   const conversation = getActiveConversation();
   const submitButton = messageForm.querySelector('button[type="submit"]');
   submitButton.disabled = true;
+
+  if (conversation.isPersonal) {
+    try {
+      const response = await fetch("/api/personal-messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+        },
+        body: JSON.stringify({ recipientId: conversation.recipientId, message: text })
+      });
+
+      if (response.status === 401) {
+        sessionStorage.removeItem("authToken");
+        window.location.replace("auth/login.html");
+        return;
+      }
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to send personal message.");
+
+      addMessage(conversation, result.message);
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+      renderConversations();
+      renderMessages();
+      messageInput.focus({ preventScroll: true });
+    } catch (error) {
+      console.error("Sending personal message failed:", error);
+      showChatNotice(error.message || "Could not send message. Please try again.", "chat-notice error", false);
+    } finally {
+      submitButton.disabled = false;
+    }
+    return;
+  }
 
   try {
     const response = await fetch("/api/messages", {
@@ -496,5 +807,6 @@ verifySession().then((isAuthenticated) => {
     renderConversations();
     connectRealtime();
     loadMessages();
+    loadPersonalConversations();
   }
 });
