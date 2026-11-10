@@ -14,12 +14,18 @@ class ChatRealtimeService {
 
       try {
         const payload = jwt.verify(token, jwtSecret, { algorithms: ["HS256"] });
-        if (typeof payload === "string" || !payload.sub || typeof payload.name !== "string") {
+        if (
+          typeof payload === "string" ||
+          typeof payload.sub !== "string" ||
+          !payload.sub.trim() ||
+          typeof payload.name !== "string" ||
+          !Number.isInteger(payload.exp)
+        ) {
           return next(this.authenticationError());
         }
 
-        socket.data.user = { id: String(payload.sub), name: payload.name };
-        socket.data.tokenExpiresAt = payload.exp ? payload.exp * 1000 : null;
+        socket.data.user = { id: payload.sub, name: payload.name };
+        socket.data.tokenExpiresAt = payload.exp * 1000;
         return next();
       } catch (error) {
         if (!(error instanceof jwt.JsonWebTokenError)) {
