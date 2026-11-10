@@ -30,7 +30,7 @@ Group Chat App
 - `GET /api/auth/me` — validates the `Authorization: Bearer <token>` header and returns the signed-in user
 - `GET /api/messages` — returns all messages with sender IDs (bearer token required); optionally filter with `?conversationId=<id>`
 - `POST /api/messages` — saves `{ "conversationId", "message" }` for the authenticated user (bearer token required)
-- Socket.IO — the chat page loads the Socket.IO client from `/socket.io/socket.io.js` and connects to the same server with the session JWT. The client joins/leaves conversations with `conversation:join` / `conversation:leave`; saved messages are delivered as `message:new` events.
+- Socket.IO — the chat page loads the Socket.IO client from `/socket.io/socket.io.js` and connects to the same server with the session JWT. The client joins/leaves conversations with `conversation:join` / `conversation:leave`; saved messages are delivered as `message:new` events. `conversation:presence` reports the number of distinct authenticated users currently connected to a conversation. Total membership is not tracked.
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
 Chat messages require the `chat_messages` table from `backend/schema.sql`; run that schema against the configured database before using chat.

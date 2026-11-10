@@ -5,11 +5,11 @@ const conversations = [
     initials: "W",
     color: "#f4d2b7",
     textColor: "#79513d",
-    members: "4 members · 2 online",
     preview: "No messages yet",
     time: "",
     unread: 0,
-    online: true,
+    onlineCount: 0,
+    presenceKnown: false,
     messages: []
   },
   {
@@ -18,10 +18,11 @@ const conversations = [
     initials: "D",
     color: "#d8d1fa",
     textColor: "#574b91",
-    members: "6 members · 1 online",
     preview: "No messages yet",
     time: "",
     unread: 0,
+    onlineCount: 0,
+    presenceKnown: false,
     messages: []
   },
   {
@@ -30,10 +31,11 @@ const conversations = [
     initials: "S",
     color: "#c7e7d7",
     textColor: "#366a52",
-    members: "5 members",
     preview: "No messages yet",
     time: "",
     unread: 0,
+    onlineCount: 0,
+    presenceKnown: false,
     messages: []
   },
   {
@@ -42,10 +44,11 @@ const conversations = [
     initials: "H",
     color: "#d6e5c4",
     textColor: "#536c3d",
-    members: "8 members",
     preview: "No messages yet",
     time: "",
     unread: 0,
+    onlineCount: 0,
+    presenceKnown: false,
     messages: []
   }
 ];
@@ -68,6 +71,8 @@ const profileAvatar = document.querySelector("#profile-avatar");
 let activeConversationId = conversations[0].id;
 let currentUser = null;
 let realtimeSocket = null;
+const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+const messageIds = new Map(conversations.map((conversation) => [conversation.id, new Set()]));
 
 const senderColors = [
   ["#e9c4d2", "#754c5d"],
@@ -89,12 +94,11 @@ function formatMessageTime(value) {
 }
 
 function addMessage(conversation, message) {
-  if (conversation.messages.some((existing) => existing.id === message.id)) return false;
+  const ids = messageIds.get(conversation.id);
+  if (ids.has(message.id)) return false;
 
+  ids.add(message.id);
   conversation.messages.push(message);
-  conversation.messages.sort((first, second) =>
-    new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
-  );
   conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${message.text}`;
   conversation.time = formatMessageTime(message.createdAt);
   return true;
@@ -102,16 +106,34 @@ function addMessage(conversation, message) {
 
 function joinActiveConversation() {
   if (!realtimeSocket || !realtimeSocket.connected) return;
+  const conversation = getActiveConversation();
+  conversation.presenceKnown = false;
+  chatSubtitle.textContent = "Checking who's here...";
   realtimeSocket.emit("conversation:join", { conversationId: activeConversationId }, (result) => {
     if (!result || !result.ok) {
       console.error("Could not join chat conversation:", result && result.error);
+      chatSubtitle.textContent = "Live presence unavailable";
+      return;
     }
+    updateConversationPresence(result.conversationId, result.onlineCount);
   });
+}
+
+function updateConversationPresence(conversationId, onlineCount) {
+  const conversation = conversationsById.get(conversationId);
+  if (!conversation || !Number.isInteger(onlineCount) || onlineCount < 0) return;
+
+  conversation.onlineCount = onlineCount;
+  conversation.presenceKnown = true;
+  if (conversation.id === activeConversationId) {
+    chatSubtitle.textContent = `${onlineCount} here now`;
+  }
 }
 
 function connectRealtime() {
   if (typeof window.io !== "function") {
     console.error("Socket.IO client failed to load; real-time messages are unavailable.");
+    chatSubtitle.textContent = "Live presence unavailable";
     return;
   }
 
@@ -121,8 +143,16 @@ function connectRealtime() {
   });
 
   realtimeSocket.on("connect", joinActiveConversation);
+  realtimeSocket.on("conversation:presence", ({ conversationId, onlineCount } = {}) => {
+    updateConversationPresence(conversationId, onlineCount);
+  });
+  realtimeSocket.on("disconnect", () => {
+    const conversation = getActiveConversation();
+    conversation.presenceKnown = false;
+    chatSubtitle.textContent = "Reconnecting...";
+  });
   realtimeSocket.on("message:new", (message) => {
-    const conversation = conversations.find((item) => item.id === message.conversationId);
+    const conversation = conversationsById.get(message.conversationId);
     if (!conversation || !addMessage(conversation, message)) return;
 
     renderConversations();
@@ -134,6 +164,7 @@ function connectRealtime() {
       window.location.replace("auth/login.html");
       return;
     }
+    chatSubtitle.textContent = "Live presence unavailable";
     console.error("Socket.IO connection failed:", error.message);
   });
   realtimeSocket.connect();
@@ -210,12 +241,6 @@ function renderConversations() {
     button.setAttribute("aria-current", conversation.id === activeConversationId ? "true" : "false");
 
     const avatar = makeAvatar(conversation.initials, conversation.color, conversation.textColor, "conversation-avatar");
-    if (conversation.online) {
-      const status = document.createElement("span");
-      status.className = "status-dot";
-      status.setAttribute("aria-label", "Online");
-      avatar.append(status);
-    }
 
     const copy = document.createElement("span");
     copy.className = "conversation-copy";
@@ -293,7 +318,9 @@ function renderMessages() {
   chatAvatar.style.backgroundColor = conversation.color;
   chatAvatar.style.color = conversation.textColor;
   chatTitle.textContent = conversation.name;
-  chatSubtitle.textContent = conversation.members;
+  chatSubtitle.textContent = conversation.presenceKnown
+    ? `${conversation.onlineCount} here now`
+    : "Checking who's here...";
   messageList.replaceChildren();
 
   if (conversation.messages.length === 0) {
@@ -335,15 +362,33 @@ async function loadMessages() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Unable to load messages.");
 
+    const receivedWhileLoading = conversations.map((conversation) => ({
+      conversation,
+      messages: conversation.messages
+    }));
     conversations.forEach((conversation) => {
-      const loadedMessages = result.messages.filter((message) => message.conversationId === conversation.id);
-      const receivedWhileLoading = conversation.messages;
       conversation.messages = [];
-      [...loadedMessages, ...receivedWhileLoading].forEach((message) => addMessage(conversation, message));
+      messageIds.get(conversation.id).clear();
+      conversation.preview = "No messages yet";
+      conversation.time = "";
+    });
+
+    result.messages.forEach((message) => {
+      const conversation = conversationsById.get(message.conversationId);
+      if (conversation) addMessage(conversation, message);
+    });
+    receivedWhileLoading.forEach(({ conversation, messages }) => {
+      messages.forEach((message) => addMessage(conversation, message));
+    });
+
+    conversations.forEach((conversation) => {
+      conversation.messages.sort((first, second) =>
+        new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime()
+      );
       const latestMessage = conversation.messages.at(-1);
-      if (!latestMessage) {
-        conversation.preview = "No messages yet";
-        conversation.time = "";
+      if (latestMessage) {
+        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+        conversation.time = formatMessageTime(latestMessage.createdAt);
       }
     });
     renderConversations();
@@ -359,6 +404,7 @@ function selectConversation(id) {
   activeConversationId = id;
   const conversation = getActiveConversation();
   conversation.unread = 0;
+  conversation.presenceKnown = false;
   if (realtimeSocket && realtimeSocket.connected && previousConversationId !== id) {
     realtimeSocket.emit("conversation:leave", { conversationId: previousConversationId });
   }
@@ -367,7 +413,7 @@ function selectConversation(id) {
   chatAvatar.style.backgroundColor = conversation.color;
   chatAvatar.style.color = conversation.textColor;
   chatTitle.textContent = conversation.name;
-  chatSubtitle.textContent = conversation.members;
+  chatSubtitle.textContent = "Checking who's here...";
   app.classList.add("show-conversation");
   renderMessages();
   joinActiveConversation();

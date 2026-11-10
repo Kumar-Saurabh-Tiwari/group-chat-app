@@ -47,31 +47,63 @@ class ChatRealtimeService {
       socket.data.sessionExpiryTimeout.unref();
     }
 
-    socket.on("conversation:join", (payload, acknowledge) => {
+    socket.on("conversation:join", async (payload, acknowledge) => {
       const conversationId = payload && payload.conversationId;
       if (!this.isValidConversationId(conversationId)) {
         this.acknowledge(acknowledge, { ok: false, error: "A valid conversationId is required." });
         return;
       }
 
-      socket.join(this.roomName(conversationId));
-      this.acknowledge(acknowledge, { ok: true, conversationId });
+      try {
+        await socket.join(this.roomName(conversationId));
+        const onlineCount = await this.updatePresence(conversationId);
+        this.acknowledge(acknowledge, { ok: true, conversationId, onlineCount });
+      } catch (error) {
+        console.error("Joining conversation failed:", error);
+        this.acknowledge(acknowledge, { ok: false, error: "Unable to join the conversation." });
+      }
     });
 
-    socket.on("conversation:leave", (payload, acknowledge) => {
+    socket.on("conversation:leave", async (payload, acknowledge) => {
       const conversationId = payload && payload.conversationId;
       if (!this.isValidConversationId(conversationId)) {
         this.acknowledge(acknowledge, { ok: false, error: "A valid conversationId is required." });
         return;
       }
 
-      socket.leave(this.roomName(conversationId));
-      this.acknowledge(acknowledge, { ok: true, conversationId });
+      try {
+        await socket.leave(this.roomName(conversationId));
+        const onlineCount = await this.updatePresence(conversationId);
+        this.acknowledge(acknowledge, { ok: true, conversationId, onlineCount });
+      } catch (error) {
+        console.error("Leaving conversation failed:", error);
+        this.acknowledge(acknowledge, { ok: false, error: "Unable to leave the conversation." });
+      }
+    });
+
+    let conversationsToUpdate = [];
+    socket.on("disconnecting", () => {
+      conversationsToUpdate = [...socket.rooms]
+        .filter((room) => room.startsWith("conversation:"))
+        .map((room) => room.slice("conversation:".length));
     });
 
     socket.on("disconnect", () => {
       clearTimeout(socket.data.sessionExpiryTimeout);
+      conversationsToUpdate.forEach((conversationId) => {
+        this.updatePresence(conversationId).catch((error) => {
+          console.error("Updating conversation presence failed:", error);
+        });
+      });
     });
+  }
+
+  async updatePresence(conversationId) {
+    const roomName = this.roomName(conversationId);
+    const sockets = await this.io.in(roomName).fetchSockets();
+    const onlineCount = new Set(sockets.map((socket) => socket.data.user.id)).size;
+    this.io.to(roomName).emit("conversation:presence", { conversationId, onlineCount });
+    return onlineCount;
   }
 
   acknowledge(callback, result) {
