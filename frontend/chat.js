@@ -299,10 +299,22 @@ function makeAvatar(initials, background, color, className) {
 function renderConversations() {
   const query = conversationSearch.value.trim().toLowerCase();
   const allConversations = getAllConversations();
-  const filtered = allConversations.filter((conversation) =>
-    conversation.name.toLowerCase().includes(query) ||
-    (conversation.email && conversation.email.toLowerCase().includes(query))
-  );
+  const filtered = allConversations
+    .filter((conversation) =>
+      conversation.name.toLowerCase().includes(query) ||
+      (conversation.email && conversation.email.toLowerCase().includes(query))
+    )
+    .sort((first, second) => {
+      const firstLatest = first.messages.reduce(
+        (latest, message) => Math.max(latest, new Date(message.createdAt).getTime() || 0),
+        0
+      );
+      const secondLatest = second.messages.reduce(
+        (latest, message) => Math.max(latest, new Date(message.createdAt).getTime() || 0),
+        0
+      );
+      return secondLatest - firstLatest;
+    });
   conversationList.replaceChildren();
   inboxCount.textContent = `${allConversations.length} conversations`;
 
