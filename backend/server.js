@@ -5,7 +5,7 @@ const bcrypt = require("bcryptjs");
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
-const ChatRealtimeService = require("./services/chat-realtime-service");
+const createSocketServer = require("./socket-io");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -296,7 +296,7 @@ app.use((error, req, res, next) => {
 });
 
 const server = http.createServer(app);
-const chatRealtime = new ChatRealtimeService({
+const chatRealtime = createSocketServer({
   server,
   jwtSecret,
   isValidConversationId

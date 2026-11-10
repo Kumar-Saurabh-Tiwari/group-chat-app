@@ -6,6 +6,9 @@ Group Chat App
 
 - `frontend/` — home, login, registration, and interactive chat demo pages
 - `backend/` — Express API, MySQL schema, and environment settings
+  - `socket-io/index.js` — configures Socket.IO, authentication middleware, and event handlers
+  - `socket-io/middleware.js` — verifies JWTs and attaches the authenticated user to each socket
+  - `socket-io/handlers/chat.js` — conversation room, presence, and disconnect events
 
 ## Run locally
 
