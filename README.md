@@ -9,6 +9,7 @@ Group Chat App
   - `socket-io/index.js` — configures Socket.IO, authentication middleware, and event handlers
   - `socket-io/middleware.js` — verifies JWTs and attaches the authenticated user to each socket
   - `socket-io/handlers/chat.js` — conversation room, presence, and disconnect events
+  - `socket-io/handlers/personalChat.js` — authenticated personal rooms and direct message events
 
 ## Run locally
 
@@ -34,6 +35,7 @@ Group Chat App
 - `GET /api/messages` — returns all messages with sender IDs (bearer token required); optionally filter with `?conversationId=<id>`
 - `POST /api/messages` — saves `{ "conversationId", "message" }` for the authenticated user (bearer token required)
 - Socket.IO — the chat page loads the Socket.IO client from `/socket.io/socket.io.js` and connects to the same server with the session JWT. The backend verifies the JWT during the Socket.IO handshake (HS256, non-empty user ID/name, and required expiration), then makes the verified identity available as `socket.data.user`. Expired or invalid tokens are rejected, and an active socket is disconnected when its token expires. The client joins/leaves conversations with `conversation:join` / `conversation:leave`; saved messages are delivered as `message:new` events. `conversation:presence` reports the number of distinct authenticated users currently connected to a conversation. Total membership is not tracked.
+- Personal Socket.IO messages — after connecting, emit `join_room` with `{ "userId": "<your authenticated user ID>" }` to join your own private room. Emit `new_message` with `{ "recipientId": "<recipient user ID>", "message": "..." }`; the server sends `new_message` to the recipient's connected sockets and acknowledges the sender. Sender identity is taken from the verified socket JWT, not the event payload. These socket messages are real-time only and are not persisted; use the authenticated HTTP message API for persisted conversation messages.
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
 Chat messages require the `chat_messages` table from `backend/schema.sql`; run that schema against the configured database before using chat.
