@@ -847,6 +847,50 @@ kbd {
   color: #aaa9b6;
 }
 
+.ai-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px;
+}
+
+.ai-suggestions[hidden] {
+  display: none;
+}
+
+.ai-suggestions-label {
+  flex: 0 0 100%;
+  color: #8986a0;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ai-suggestions-status {
+  color: #a24952;
+  font-size: 9px;
+}
+
+.ai-suggestion {
+  max-width: 100%;
+  padding: 6px 10px;
+  overflow: hidden;
+  border: 1px solid #e8e4fa;
+  border-radius: 999px;
+  background: #faf9ff;
+  color: #5549a5;
+  cursor: pointer;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-suggestion:hover,
+.ai-suggestion:focus-visible {
+  border-color: #c9c1fb;
+  background: #f0edff;
+}
+
 .attachment-list {
   display: flex;
   max-height: 158px;

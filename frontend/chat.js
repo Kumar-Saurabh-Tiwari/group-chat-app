@@ -64,6 +64,7 @@ const messageArea = document.querySelector("#message-area");
 const messageList = document.querySelector("#message-list");
 const messageForm = document.querySelector("#message-form");
 const messageInput = document.querySelector("#message-input");
+const aiSuggestions = document.querySelector("#ai-suggestions");
 const attachmentInput = document.querySelector("#attachment-input");
 const attachmentButton = document.querySelector("#attachment-button");
 const attachmentList = document.querySelector("#attachment-list");
@@ -91,6 +92,13 @@ let realtimeSocket = null;
 let userSearchTimer = null;
 let userSearchController = null;
 let userSearchRequestId = 0;
+let aiSuggestionController = null;
+let aiSuggestionTimer = null;
+let aiSuggestionRequestId = 0;
+let requestedReplyMessageId = null;
+let replySuggestionMessageId = null;
+let replySuggestions = [];
+let predictiveSuggestions = [];
 const selectedAttachments = [];
 let attachmentPreviewUrls = [];
 let mediaDialogOpener = null;
@@ -356,7 +364,14 @@ function connectRealtime() {
 
     if (conversation.id !== activeConversationId) conversation.unread += 1;
     renderConversations();
-    if (conversation.id === activeConversationId) renderMessages();
+    if (conversation.id === activeConversationId) {
+      if (message.userId !== currentUser.id) {
+        replySuggestionMessageId = null;
+        replySuggestions = [];
+        requestedReplyMessageId = null;
+      }
+      renderMessages();
+    }
   });
   realtimeSocket.on("new_message", (message) => {
     let conversation = conversationsById.get(message.conversationId);
@@ -371,7 +386,12 @@ function connectRealtime() {
 
     if (conversation.id !== activeConversationId) conversation.unread += 1;
     renderConversations();
-    if (conversation.id === activeConversationId) renderMessages();
+    if (conversation.id === activeConversationId) {
+      replySuggestionMessageId = null;
+      replySuggestions = [];
+      requestedReplyMessageId = null;
+      renderMessages();
+    }
   });
   realtimeSocket.on("connect_error", (error) => {
     if (error.data && error.data.code === "AUTHENTICATION_ERROR") {
@@ -723,6 +743,7 @@ function renderMessages() {
   messageArea.style.scrollBehavior = "auto";
   messageArea.scrollTop = messageArea.scrollHeight;
   messageArea.style.scrollBehavior = "";
+  updateAISuggestions();
 }
 
 function showChatNotice(message, className = "chat-notice", replace = true) {
@@ -731,6 +752,116 @@ function showChatNotice(message, className = "chat-notice", replace = true) {
   notice.textContent = message;
   if (replace) messageList.replaceChildren(notice);
   else messageList.append(notice);
+}
+
+function renderAISuggestions(title, suggestions, type) {
+  aiSuggestions.replaceChildren();
+  aiSuggestions.hidden = suggestions.length === 0;
+  if (suggestions.length === 0) return;
+
+  const heading = document.createElement("span");
+  heading.className = "ai-suggestions-label";
+  heading.textContent = title;
+  aiSuggestions.append(heading);
+  suggestions.forEach((suggestion) => {
+    const button = document.createElement("button");
+    button.className = "ai-suggestion";
+    button.type = "button";
+    button.textContent = suggestion;
+    button.addEventListener("click", () => {
+      if (type === "predictive") {
+        const draft = messageInput.value;
+        const separator = draft && !/\s$/.test(draft) ? " " : "";
+        messageInput.value = `${draft}${separator}${suggestion}`;
+        predictiveSuggestions = [];
+        messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        messageInput.value = suggestion;
+        messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+        messageInput.focus();
+      }
+    });
+    aiSuggestions.append(button);
+  });
+}
+
+function updateAISuggestions() {
+  const draft = messageInput.value.trim();
+  if (draft) {
+    renderAISuggestions("AI suggestions", predictiveSuggestions, "predictive");
+    return;
+  }
+
+  const conversation = getActiveConversation();
+  const latestMessage = conversation.messages.at(-1);
+  if (!latestMessage || latestMessage.userId === currentUser.id || !latestMessage.text) {
+    renderAISuggestions("", [], "replies");
+    return;
+  }
+  if (replySuggestionMessageId === latestMessage.id) {
+    renderAISuggestions("Quick replies", replySuggestions, "replies");
+    return;
+  }
+  renderAISuggestions("", [], "replies");
+  if (requestedReplyMessageId !== latestMessage.id) {
+    requestAISuggestions("replies", "", latestMessage.id);
+  }
+}
+
+function renderAISuggestionStatus(message) {
+  aiSuggestions.replaceChildren();
+  const status = document.createElement("span");
+  status.className = "ai-suggestions-status";
+  status.textContent = message;
+  aiSuggestions.append(status);
+  aiSuggestions.hidden = false;
+}
+
+function requestAISuggestions(type, draft, incomingMessageId = null) {
+  const requestId = ++aiSuggestionRequestId;
+  clearTimeout(aiSuggestionTimer);
+  if (aiSuggestionController) aiSuggestionController.abort();
+
+  if (type === "predictive" && draft.trim().length < 3) {
+    predictiveSuggestions = [];
+    if (!messageInput.value.trim()) updateAISuggestions();
+    else renderAISuggestions("", [], type);
+    return;
+  }
+  if (type === "replies") requestedReplyMessageId = incomingMessageId;
+  aiSuggestionTimer = setTimeout(async () => {
+    const conversation = getActiveConversation();
+    aiSuggestionController = new AbortController();
+    try {
+      const response = await fetch("/api/ai/suggestions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + (sessionStorage.getItem("authToken") || "")
+        },
+        body: JSON.stringify({ conversationId: conversation.id, type, draft: draft.slice(-500) }),
+        signal: aiSuggestionController.signal
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to load AI suggestions.");
+      if (requestId !== aiSuggestionRequestId || activeConversationId !== conversation.id) return;
+
+      if (type === "predictive") {
+        predictiveSuggestions = result.suggestions;
+      } else if (incomingMessageId === requestedReplyMessageId) {
+        replySuggestionMessageId = incomingMessageId;
+        replySuggestions = result.suggestions;
+      }
+      updateAISuggestions();
+    } catch (error) {
+      if (error.name === "AbortError" || requestId !== aiSuggestionRequestId) return;
+      console.error("Loading AI suggestions failed:", error);
+      if (type === "replies" && requestedReplyMessageId === incomingMessageId) {
+        requestedReplyMessageId = null;
+      }
+      renderAISuggestionStatus(error.message || "AI suggestions are unavailable. Please try again.");
+    }
+  }, type === "predictive" ? 700 : 0);
 }
 
 async function loadMessages() {
@@ -924,6 +1055,14 @@ function selectConversation(id) {
   }
 
   activeConversationId = id;
+  clearTimeout(aiSuggestionTimer);
+  if (aiSuggestionController) aiSuggestionController.abort();
+  aiSuggestionRequestId += 1;
+  predictiveSuggestions = [];
+  replySuggestions = [];
+  replySuggestionMessageId = null;
+  requestedReplyMessageId = null;
+  renderAISuggestions("", [], "replies");
   const conversation = getActiveConversation();
   conversation.unread = 0;
   conversation.presenceKnown = false;
@@ -1115,6 +1254,16 @@ joinGroupForm.addEventListener("submit", async (event) => {
 messageInput.addEventListener("input", () => {
   messageInput.style.height = "auto";
   messageInput.style.height = `${Math.min(messageInput.scrollHeight, 110)}px`;
+  predictiveSuggestions = [];
+  if (messageInput.value.trim()) {
+    requestAISuggestions("predictive", messageInput.value);
+  } else {
+    clearTimeout(aiSuggestionTimer);
+    if (aiSuggestionController) aiSuggestionController.abort();
+    aiSuggestionRequestId += 1;
+    requestedReplyMessageId = null;
+    updateAISuggestions();
+  }
 });
 
 messageInput.addEventListener("keydown", (event) => {
@@ -1253,6 +1402,10 @@ messageForm.addEventListener("submit", async (event) => {
     addMessage(conversation, result.message);
     messageInput.value = "";
     messageInput.style.height = "auto";
+    clearTimeout(aiSuggestionTimer);
+    if (aiSuggestionController) aiSuggestionController.abort();
+    aiSuggestionRequestId += 1;
+    predictiveSuggestions = [];
     selectedAttachments.splice(0, selectedAttachments.length);
     renderAttachments();
     renderConversations();

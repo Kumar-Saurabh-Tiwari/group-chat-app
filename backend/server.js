@@ -10,6 +10,7 @@ const { CronJob } = require("cron");
 const createSocketServer = require("./socket-io");
 const personalRoomId = require("./socket-io/personal-room");
 const { archiveOldMessages } = require("./services/archive-chat");
+const { generateSuggestions } = require("./services/gemini-suggestions");
 const {
   ALLOWED_CONTENT_TYPES,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -42,6 +43,9 @@ const CHAT_MESSAGE_SOURCE = `(
   UNION ALL
   SELECT id, conversation_id, user_id, message, created_at FROM archived_chat_messages
 )`;
+const aiSuggestionRequests = new Map();
+const AI_SUGGESTION_LIMIT = 30;
+const AI_SUGGESTION_WINDOW_MS = 60 * 1000;
 
 app.use(express.json({ limit: "10kb" }));
 
@@ -205,9 +209,9 @@ async function addAttachmentsToMessages(messages) {
 
 function requireAuth(req, res, next) {
   const authorization = req.get("authorization") || "";
-  const [scheme, token, ...extraParts] = authorization.split(" ");
+  const [scheme, token, ...extraParts] = authorization.trim().split(/\s+/);
 
-  if (scheme !== "Bearer" || !token || extraParts.length > 0) {
+  if (!scheme || scheme.toLowerCase() !== "bearer" || !token || extraParts.length > 0) {
     return res.status(401).json({ error: "A valid bearer token is required." });
   }
 
@@ -248,6 +252,101 @@ app.post("/api/uploads/presign", requireAuth, async (req, res) => {
         ? "File uploads are not configured. Set AWS_REGION, S3_BUCKET, and both AWS credentials in backend/.env."
         : "Unable to prepare the file upload."
     });
+  }
+});
+
+app.post("/api/ai/suggestions", requireAuth, async (req, res) => {
+  const { conversationId, type, draft = "" } = req.body || {};
+  if (
+    typeof conversationId !== "string" ||
+    typeof type !== "string" ||
+    (type !== "predictive" && type !== "replies") ||
+    typeof draft !== "string" ||
+    draft.length > 500
+  ) {
+    return res.status(400).json({ error: "A valid conversation, suggestion type, and draft are required." });
+  }
+
+  const userId = String(req.authUser.id);
+  const personalMatch = /^personal:([0-9]{1,20}):([0-9]{1,20})$/.exec(conversationId);
+  const isPersonalConversation = Boolean(
+    personalMatch &&
+    personalMatch[1] !== personalMatch[2] &&
+    (personalMatch[1] === userId || personalMatch[2] === userId)
+  );
+  try {
+    const isSharedConversation = await isAuthorizedConversation(userId, conversationId);
+    if (!isPersonalConversation && !isSharedConversation) {
+      return res.status(403).json({ error: "You cannot request suggestions for this conversation." });
+    }
+    if (isPersonalConversation) {
+      const recipientId = personalMatch[1] === userId ? personalMatch[2] : personalMatch[1];
+      if (!(await isValidRecipientId(recipientId))) {
+        return res.status(404).json({ error: "The other participant was not found." });
+      }
+    }
+
+    const now = Date.now();
+    const requestWindow = aiSuggestionRequests.get(userId);
+    if (!requestWindow || now - requestWindow.startedAt >= AI_SUGGESTION_WINDOW_MS) {
+      if (aiSuggestionRequests.size >= 10000) {
+        for (const [trackedUserId, window] of aiSuggestionRequests) {
+          if (now - window.startedAt >= AI_SUGGESTION_WINDOW_MS) {
+            aiSuggestionRequests.delete(trackedUserId);
+          }
+        }
+      }
+      aiSuggestionRequests.set(userId, { startedAt: now, count: 1 });
+    } else if (requestWindow.count >= AI_SUGGESTION_LIMIT) {
+      return res.status(429).json({ error: "AI suggestions are temporarily rate-limited. Please try again shortly." });
+    } else {
+      requestWindow.count += 1;
+    }
+
+    const [rows] = await database.execute(
+      `SELECT user_id, message
+       FROM ${CHAT_MESSAGE_SOURCE} AS messages
+       WHERE conversation_id = ? AND message <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT 12`,
+      [conversationId]
+    );
+    const recentMessages = rows.reverse().map((row) => ({
+      isUser: String(row.user_id) === userId,
+      text: row.message
+    }));
+    if (type === "replies" && recentMessages.at(-1)?.isUser !== false) {
+      return res.json({ suggestions: [] });
+    }
+
+    const suggestions = await generateSuggestions({
+      type,
+      draft,
+      messages: recentMessages,
+      ownMessages: recentMessages.filter(({ isUser }) => isUser).slice(-4).map(({ text }) => text)
+    });
+    return res.json({ suggestions });
+  } catch (error) {
+    if (error.code === "GEMINI_NOT_CONFIGURED") {
+      return res.status(503).json({ error: "AI suggestions are not configured. Set GEMINI_API_KEY in backend/.env." });
+    }
+    console.error("Generating AI suggestions failed:", error.code || error.message);
+    if (error.code === "GEMINI_TIMEOUT") {
+      return res.status(504).json({ error: "AI suggestions took too long. Please try again." });
+    }
+    if (error.code === "GEMINI_API_ERROR") {
+      return res.status(error.status >= 400 && error.status < 500 ? 502 : 503).json({
+        error: error.publicMessage || "Gemini is temporarily unavailable. Please try again."
+      });
+    }
+    if (
+      isDatabaseUnavailable(error) ||
+      (error.code === "ER_NO_SUCH_TABLE" && /archived_chat_messages/i.test(error.message))
+    ) {
+      const databaseError = getChatDatabaseError(error, "Unable to load suggestion context.");
+      return res.status(databaseError.status).json({ error: databaseError.message });
+    }
+    return res.status(502).json({ error: "AI suggestions are temporarily unavailable." });
   }
 });
 

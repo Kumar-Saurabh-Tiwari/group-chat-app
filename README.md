@@ -54,6 +54,10 @@ For an existing database, run `backend/schema.sql` again against the database se
 
 Attachments are shared through the same group, personal, and conversation message permissions as their message.
 
+## Gemini AI suggestions
+
+Set `GEMINI_API_KEY` in `backend/.env`; optionally set `GEMINI_MODEL` (defaults to `gemini-3.5-flash-lite`). The authenticated `/api/ai/suggestions` endpoint uses Google's `@google/genai` SDK and Interactions API to suggest short draft continuations and quick replies. Requests set `store: false`. Suggestions are debounced while typing, appear above the composer, and can be selected to fill the draft. The endpoint checks conversation access, limits each user to 30 requests per minute, and uses recent messages plus the user's own recent messages for context and tone. The API key remains on the backend; the relevant recent chat text is sent to Google Gemini to generate suggestions. AI suggestions require internet access and an active Gemini API key/quota.
+
 ## Nightly message archiving
 
 The backend runs a cron job every night at midnight UTC by default. It moves messages older than 24 hours from `chat_messages` to `archived_chat_messages` in batches of 1,000, moves their attachment metadata to `archived_chat_message_attachments`, then deletes the originals in the same transaction. Batch transactions keep the live message table smaller without losing media or partially moving a message. Conversation history and group previews continue to include archived messages.
@@ -77,6 +81,7 @@ Set `ARCHIVE_TIMEZONE` in `backend/.env` to an IANA timezone (for example, `Amer
 - `POST /api/groups/join` — joins a private group using `{ "inviteCode" }`
 - `GET /api/groups/:groupId/messages` — loads saved messages for a group the user has joined
 - `POST /api/groups/:groupId/messages` — saves a group message for a member and broadcasts it to clients in that group room
+- `POST /api/ai/suggestions` — generates authenticated, context-aware draft continuations or quick replies with Gemini
 - Socket.IO — the chat page loads the Socket.IO client from `/socket.io/socket.io.js` and connects to the same server with the session JWT. The backend verifies the JWT during the Socket.IO handshake (HS256, non-empty user ID/name, and required expiration), then makes the verified identity available as `socket.data.user`. Expired or invalid tokens are rejected, and an active socket is disconnected when its token expires. The client joins/leaves conversations with `conversation:join` / `conversation:leave`; saved messages are delivered as `message:new` events. `conversation:presence` reports the number of distinct authenticated users currently connected to a conversation. Total membership is not tracked.
 - Group chats — groups are private until a member shares their invite code. Joining adds the authenticated user to the group; group message history, sending, and Socket.IO room entry are restricted to members. The client joins each of its group rooms after connecting so messages arrive in real time even when another conversation is selected. Group-room broadcasts use `io.in(room).emit(...)`; message history remains available after reconnecting.
 - Personal Socket.IO messages — search for recipients with `GET /api/users/search` or look them up with `GET /api/users/lookup`. Every authenticated socket joins its own user room, so `POST /api/personal-messages` can notify the recipient immediately even when they have not opened the conversation. `GET /api/personal-conversations` restores saved chats and history after refresh. Sender identity is taken from the authenticated JWT, not the request body.
