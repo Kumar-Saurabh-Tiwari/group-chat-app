@@ -12,11 +12,12 @@ Group Chat App
   - `socket-io/handlers/personalChat.js` — authenticated personal rooms and direct message events
   - `socket-io/personal-room.js` — deterministic room IDs shared by each pair of users
   - `services/s3-storage.js` — authenticated S3 uploads, upload verification, and private media links
+  - `services/archive-chat.js` — transactional, batched archiving of old messages and attachments
 
 ## Run locally
 
 1. Make sure Node.js 18+ and MySQL are installed and running.
-2. Initialize the database tables by running `backend/schema.sql` in MySQL. Run it again on an existing database to create the group and group-membership tables.
+2. Initialize the database tables by running `backend/schema.sql` in MySQL. Run it again on an existing database to create any missing chat, archive, and group tables and the archive index.
 3. In `backend/`, copy `.env.example` to `.env` and set your MySQL password.
 4. Set `JWT_SECRET` in `backend/.env` to a random secret of at least 32 characters. Generate one with:
    `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
@@ -49,9 +50,15 @@ Keep S3 Block Public Access enabled and grant the app identity only `s3:PutObjec
 ]
 ```
 
-For an existing database, run `backend/schema.sql` again against the database selected by `DB_NAME`. It creates the `chat_message_attachments` table without changing existing tables. Until this table exists, message history endpoints return an explicit setup error.
+For an existing database, run `backend/schema.sql` again against the database selected by `DB_NAME`. It creates any missing attachment and archive tables and adds the archive-selection index without replacing existing data.
 
 Attachments are shared through the same group, personal, and conversation message permissions as their message.
+
+## Nightly message archiving
+
+The backend runs a cron job every night at midnight UTC by default. It moves messages older than 24 hours from `chat_messages` to `archived_chat_messages` in batches of 1,000, moves their attachment metadata to `archived_chat_message_attachments`, then deletes the originals in the same transaction. Batch transactions keep the live message table smaller without losing media or partially moving a message. Conversation history and group previews continue to include archived messages.
+
+Set `ARCHIVE_TIMEZONE` in `backend/.env` to an IANA timezone (for example, `America/Los_Angeles`) to use a different local midnight. For existing databases, run `backend/schema.sql` again to create the archive tables and add the archive-selection index; the migration is safe to rerun.
 
 ## API
 
@@ -75,4 +82,4 @@ Attachments are shared through the same group, personal, and conversation messag
 - Personal Socket.IO messages — search for recipients with `GET /api/users/search` or look them up with `GET /api/users/lookup`. Every authenticated socket joins its own user room, so `POST /api/personal-messages` can notify the recipient immediately even when they have not opened the conversation. `GET /api/personal-conversations` restores saved chats and history after refresh. Sender identity is taken from the authenticated JWT, not the request body.
 
 Passwords are hashed with bcrypt before storage. Successful login returns a one-day JWT.
-Chat messages require the `chat_messages` table from `backend/schema.sql`; run that schema against the configured database before using chat. Group and personal messages are persisted in that table.
+Chat messages require the `chat_messages`, `archived_chat_messages`, and attachment tables from `backend/schema.sql`; run that schema against the configured database before using chat. New messages are saved to `chat_messages`, while older messages remain available from the archive.

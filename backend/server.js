@@ -6,8 +6,10 @@ const bcrypt = require("bcryptjs");
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
+const { CronJob } = require("cron");
 const createSocketServer = require("./socket-io");
 const personalRoomId = require("./socket-io/personal-room");
+const { archiveOldMessages } = require("./services/archive-chat");
 const {
   ALLOWED_CONTENT_TYPES,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -35,6 +37,11 @@ const database = mysql.createPool({
   queueLimit: 0
 });
 const s3Storage = createS3Storage();
+const CHAT_MESSAGE_SOURCE = `(
+  SELECT id, conversation_id, user_id, message, created_at FROM chat_messages
+  UNION ALL
+  SELECT id, conversation_id, user_id, message, created_at FROM archived_chat_messages
+)`;
 
 app.use(express.json({ limit: "10kb" }));
 
@@ -70,10 +77,13 @@ function getChatDatabaseError(error, fallback) {
       message: "The database is unavailable. Check the backend database settings."
     };
   }
-  if (error.code === "ER_NO_SUCH_TABLE" && /chat_message_attachments/i.test(error.message)) {
+  if (
+    error.code === "ER_NO_SUCH_TABLE" &&
+    /chat_message_attachments|archived_chat_messages|archived_chat_message_attachments/i.test(error.message)
+  ) {
     return {
       status: 503,
-      message: "The chat_message_attachments table is missing. Run backend/schema.sql against the configured database."
+      message: "A chat message or archive table is missing. Run backend/schema.sql against the configured database."
     };
   }
   return { status: 500, message: fallback };
@@ -164,7 +174,11 @@ async function addAttachmentsToMessages(messages) {
   const placeholders = messageIds.map(() => "?").join(", ");
   const [rows] = await database.execute(
     `SELECT id, message_id, object_key, file_name, content_type, file_size
-     FROM chat_message_attachments
+     FROM (
+       SELECT id, message_id, object_key, file_name, content_type, file_size FROM chat_message_attachments
+       UNION ALL
+       SELECT id, message_id, object_key, file_name, content_type, file_size FROM archived_chat_message_attachments
+     ) AS attachments
      WHERE message_id IN (${placeholders})
      ORDER BY id`,
     messageIds
@@ -312,7 +326,7 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
   try {
     const [conversationRows] = await database.execute(
       `SELECT DISTINCT conversation_id
-       FROM chat_messages
+       FROM ${CHAT_MESSAGE_SOURCE} AS messages
        WHERE conversation_id LIKE ? OR conversation_id LIKE ?
        ORDER BY conversation_id`,
       [`personal:${userId}:%`, `personal:%:${userId}`]
@@ -343,13 +357,13 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
 
     const roomPlaceholders = roomIds.map(() => "?").join(", ");
     const [messages] = await database.execute(
-      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+      `SELECT messages.id, messages.conversation_id, messages.user_id,
               users.name AS sender, users.email AS sender_email,
-              chat_messages.message, chat_messages.created_at
-       FROM chat_messages
-       INNER JOIN users ON users.id = chat_messages.user_id
-       WHERE chat_messages.conversation_id IN (${roomPlaceholders})
-       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+             messages.message, messages.created_at
+      FROM ${CHAT_MESSAGE_SOURCE} AS messages
+      INNER JOIN users ON users.id = messages.user_id
+      WHERE messages.conversation_id IN (${roomPlaceholders})
+      ORDER BY messages.created_at ASC, messages.id ASC`,
       roomIds
     );
     const savedMessages = await addAttachmentsToMessages(messages.map((message) => ({
@@ -424,10 +438,10 @@ app.get("/api/groups", requireAuth, async (req, res) => {
       `SELECT chat_groups.id, chat_groups.name, chat_groups.invite_code, chat_groups.created_at,
               (SELECT COUNT(*) FROM chat_group_members AS members
                WHERE members.group_id = chat_groups.id) AS member_count,
-              (SELECT messages.message FROM chat_messages AS messages
+              (SELECT messages.message FROM ${CHAT_MESSAGE_SOURCE} AS messages
                WHERE messages.conversation_id = CONCAT('group:', chat_groups.id)
                ORDER BY messages.created_at DESC, messages.id DESC LIMIT 1) AS last_message,
-              (SELECT messages.created_at FROM chat_messages AS messages
+              (SELECT messages.created_at FROM ${CHAT_MESSAGE_SOURCE} AS messages
                WHERE messages.conversation_id = CONCAT('group:', chat_groups.id)
                ORDER BY messages.created_at DESC, messages.id DESC LIMIT 1) AS last_message_at
        FROM chat_groups
@@ -577,12 +591,12 @@ app.get("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
     }
 
     const [messages] = await database.execute(
-      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
-              users.name AS sender, chat_messages.message, chat_messages.created_at
-       FROM chat_messages
-       INNER JOIN users ON users.id = chat_messages.user_id
-       WHERE chat_messages.conversation_id = ?
-       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      `SELECT messages.id, messages.conversation_id, messages.user_id,
+              users.name AS sender, messages.message, messages.created_at
+       FROM ${CHAT_MESSAGE_SOURCE} AS messages
+       INNER JOIN users ON users.id = messages.user_id
+       WHERE messages.conversation_id = ?
+       ORDER BY messages.created_at ASC, messages.id ASC`,
       [groupConversationId(groupId)]
     );
     const mappedMessages = await addAttachmentsToMessages(messages.map((message) => ({
@@ -660,14 +674,14 @@ app.get("/api/messages", requireAuth, async (req, res) => {
 
   try {
     const [messages] = await database.execute(
-      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
-              users.name AS sender, chat_messages.message, chat_messages.created_at
-       FROM chat_messages
-       INNER JOIN users ON users.id = chat_messages.user_id
-       WHERE chat_messages.conversation_id NOT LIKE 'personal:%'
-         AND chat_messages.conversation_id NOT LIKE 'group:%'
-       ${conversationId === undefined ? "" : "AND chat_messages.conversation_id = ?"}
-       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+      `SELECT messages.id, messages.conversation_id, messages.user_id,
+              users.name AS sender, messages.message, messages.created_at
+       FROM ${CHAT_MESSAGE_SOURCE} AS messages
+       INNER JOIN users ON users.id = messages.user_id
+       WHERE messages.conversation_id NOT LIKE 'personal:%'
+         AND messages.conversation_id NOT LIKE 'group:%'
+       ${conversationId === undefined ? "" : "AND messages.conversation_id = ?"}
+       ORDER BY messages.created_at ASC, messages.id ASC`,
       conversationId === undefined ? [] : [conversationId]
     );
 
@@ -747,13 +761,13 @@ app.get("/api/personal-messages", requireAuth, async (req, res) => {
 
     const conversationId = personalRoomId(req.authUser.id, recipientId);
     const [messages] = await database.execute(
-      `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
+      `SELECT messages.id, messages.conversation_id, messages.user_id,
               users.name AS sender, users.email AS sender_email,
-              chat_messages.message, chat_messages.created_at
-       FROM chat_messages
-       INNER JOIN users ON users.id = chat_messages.user_id
-       WHERE chat_messages.conversation_id = ?
-       ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
+              messages.message, messages.created_at
+       FROM ${CHAT_MESSAGE_SOURCE} AS messages
+       INNER JOIN users ON users.id = messages.user_id
+       WHERE messages.conversation_id = ?
+       ORDER BY messages.created_at ASC, messages.id ASC`,
       [conversationId]
     );
 
@@ -960,6 +974,25 @@ const chatRealtime = createSocketServer({
   isValidConversationId,
   isAuthorizedConversation,
   isValidRecipientId
+});
+
+CronJob.from({
+  cronTime: "0 0 * * *",
+  onTick: async () => {
+    try {
+      const result = await archiveOldMessages(database);
+      if (result.archivedMessages > 0) {
+        console.log(
+          `Archived ${result.archivedMessages} messages and ${result.archivedAttachments} attachments.`
+        );
+      }
+    } catch (error) {
+      console.error("Nightly chat archiving failed:", error);
+    }
+  },
+  start: true,
+  timeZone: process.env.ARCHIVE_TIMEZONE || "UTC",
+  waitForCompletion: true
 });
 
 server.listen(port, () => {

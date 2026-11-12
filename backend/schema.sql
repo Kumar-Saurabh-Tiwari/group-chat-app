@@ -25,10 +25,26 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   PRIMARY KEY (id),
   KEY chat_messages_conversation_created (conversation_id, created_at, id),
   KEY chat_messages_user_created (user_id, created_at),
+  KEY chat_messages_created (created_at, id),
   CONSTRAINT chat_messages_user_fk
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON DELETE CASCADE
 );
+
+SET @chat_messages_created_index_sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE chat_messages ADD INDEX chat_messages_created (created_at, id)',
+    'SELECT 1'
+  )
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'chat_messages'
+    AND index_name = 'chat_messages_created'
+);
+PREPARE chat_messages_created_index_statement FROM @chat_messages_created_index_sql;
+EXECUTE chat_messages_created_index_statement;
+DEALLOCATE PREPARE chat_messages_created_index_statement;
 
 CREATE TABLE IF NOT EXISTS chat_message_attachments (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -43,6 +59,37 @@ CREATE TABLE IF NOT EXISTS chat_message_attachments (
   KEY chat_message_attachments_message (message_id),
   CONSTRAINT chat_message_attachments_message_fk
     FOREIGN KEY (message_id) REFERENCES chat_messages (id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS archived_chat_messages (
+  id BIGINT UNSIGNED NOT NULL,
+  conversation_id VARCHAR(64) NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (id),
+  KEY archived_chat_messages_conversation_created (conversation_id, created_at, id),
+  KEY archived_chat_messages_user_created (user_id, created_at),
+  KEY archived_chat_messages_created (created_at, id),
+  CONSTRAINT archived_chat_messages_user_fk
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS archived_chat_message_attachments (
+  id BIGINT UNSIGNED NOT NULL,
+  message_id BIGINT UNSIGNED NOT NULL,
+  object_key VARCHAR(512) NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  content_type VARCHAR(127) NOT NULL,
+  file_size INT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY archived_chat_message_attachments_object_key_unique (object_key),
+  KEY archived_chat_message_attachments_message (message_id),
+  CONSTRAINT archived_chat_message_attachments_message_fk
+    FOREIGN KEY (message_id) REFERENCES archived_chat_messages (id)
     ON DELETE CASCADE
 );
 
