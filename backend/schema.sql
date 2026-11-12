@@ -30,6 +30,22 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_message_attachments (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  message_id BIGINT UNSIGNED NOT NULL,
+  object_key VARCHAR(512) NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  content_type VARCHAR(127) NOT NULL,
+  file_size INT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY chat_message_attachments_object_key_unique (object_key),
+  KEY chat_message_attachments_message (message_id),
+  CONSTRAINT chat_message_attachments_message_fk
+    FOREIGN KEY (message_id) REFERENCES chat_messages (id)
+    ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS chat_groups (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name VARCHAR(100) NOT NULL,

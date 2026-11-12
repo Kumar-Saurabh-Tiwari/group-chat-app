@@ -68,6 +68,10 @@ const attachmentInput = document.querySelector("#attachment-input");
 const attachmentButton = document.querySelector("#attachment-button");
 const attachmentList = document.querySelector("#attachment-list");
 const attachmentNote = document.querySelector("#attachment-note");
+const mediaDialog = document.querySelector("#media-dialog");
+const mediaDialogName = document.querySelector("#media-dialog-name");
+const mediaDialogContent = document.querySelector("#media-dialog-content");
+const mediaDialogClose = document.querySelector("#media-dialog-close");
 const backButton = document.querySelector("#back-button");
 const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
@@ -89,6 +93,24 @@ let userSearchController = null;
 let userSearchRequestId = 0;
 const selectedAttachments = [];
 let attachmentPreviewUrls = [];
+let mediaDialogOpener = null;
+const maxAttachmentCount = 5;
+const maxAttachmentBytes = 25 * 1024 * 1024;
+const allowedAttachmentTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/webm",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain"
+]);
 const personalConversations = [];
 const groupConversations = [];
 const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
@@ -127,24 +149,57 @@ function getAttachmentType(file) {
   return "File";
 }
 
+function showAttachmentNote(message, isError = false) {
+  attachmentNote.textContent = message;
+  attachmentNote.hidden = !message;
+  attachmentNote.classList.toggle("error", isError);
+}
+
 function renderAttachments() {
   attachmentPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   attachmentPreviewUrls = [];
   attachmentList.replaceChildren();
   attachmentList.hidden = selectedAttachments.length === 0;
-  attachmentNote.hidden = selectedAttachments.length === 0;
+  messageInput.placeholder = selectedAttachments.length > 0
+    ? "Add a message (optional)"
+    : "Write a message...";
 
   selectedAttachments.forEach((file, index) => {
     const item = document.createElement("div");
     item.className = "attachment-item";
 
-    if (file.type.startsWith("image/")) {
-      const preview = document.createElement("img");
-      preview.className = "attachment-preview";
-      preview.alt = "";
-      preview.src = URL.createObjectURL(file);
-      attachmentPreviewUrls.push(preview.src);
-      item.append(preview);
+    if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
+      const previewUrl = URL.createObjectURL(file);
+      attachmentPreviewUrls.push(previewUrl);
+      const previewButton = document.createElement("button");
+      previewButton.className = "attachment-media-preview";
+      previewButton.type = "button";
+      previewButton.dataset.mediaUrl = previewUrl;
+      previewButton.dataset.mediaType = file.type;
+      previewButton.dataset.mediaName = file.name;
+      previewButton.setAttribute("aria-label", `Preview ${getAttachmentType(file)} ${file.name}`);
+
+      if (file.type.startsWith("image/")) {
+        const preview = document.createElement("img");
+        preview.className = "attachment-preview";
+        preview.alt = "";
+        preview.src = previewUrl;
+        previewButton.append(preview);
+      } else {
+        previewButton.classList.add("message-video-trigger");
+        const preview = document.createElement("video");
+        preview.className = "attachment-preview";
+        preview.src = previewUrl;
+        preview.muted = true;
+        preview.playsInline = true;
+        preview.preload = "metadata";
+        const playLabel = document.createElement("span");
+        playLabel.className = "message-video-play";
+        playLabel.setAttribute("aria-hidden", "true");
+        playLabel.textContent = "▶";
+        previewButton.append(preview, playLabel);
+      }
+      item.append(previewButton);
     } else {
       const type = document.createElement("span");
       type.className = "attachment-type";
@@ -172,10 +227,17 @@ function renderAttachments() {
     attachmentList.append(item);
   });
 
-  if (selectedAttachments.length > 0) {
-    attachmentNote.textContent = "Preview only - file uploads are not connected yet.";
-    attachmentNote.classList.remove("error");
-  }
+  showAttachmentNote(
+    selectedAttachments.length > 0
+      ? `Up to ${maxAttachmentCount} files · ${formatFileSize(maxAttachmentBytes)} each. You can send files without a message.`
+      : ""
+  );
+}
+
+function getMessagePreview(message) {
+  const text = message.text || "";
+  const media = (message.attachments || []).map(({ name }) => name).join(", ");
+  return text && media ? `${text} · ${media}` : text || media || "Attachment";
 }
 
 function addMessage(conversation, message) {
@@ -184,7 +246,8 @@ function addMessage(conversation, message) {
 
   ids.add(message.id);
   conversation.messages.push(message);
-  conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${message.text}`;
+  const preview = getMessagePreview(message);
+  conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${preview}`;
   conversation.time = formatMessageTime(message.createdAt);
   conversation.latestMessageAt = message.createdAt;
   return true;
@@ -540,9 +603,75 @@ function createMessage(message) {
     content.append(name);
   }
 
-  const bubble = document.createElement("p");
-  bubble.className = "message-bubble";
-  bubble.textContent = message.text;
+  if (message.text) {
+    const bubble = document.createElement("p");
+    bubble.className = "message-bubble";
+    bubble.textContent = message.text;
+    content.append(bubble);
+  }
+
+  (message.attachments || []).forEach((attachment) => {
+    if (attachment.contentType.startsWith("image/")) {
+      const previewButton = document.createElement("button");
+      previewButton.className = "message-media-trigger";
+      previewButton.type = "button";
+      previewButton.dataset.mediaUrl = attachment.url;
+      previewButton.dataset.mediaType = attachment.contentType;
+      previewButton.dataset.mediaName = attachment.name;
+      previewButton.setAttribute("aria-label", `Preview image ${attachment.name}`);
+      const image = document.createElement("img");
+      image.className = "message-media-image";
+      image.src = attachment.url;
+      image.alt = attachment.name;
+      image.loading = "lazy";
+      previewButton.append(image);
+      content.append(previewButton);
+      return;
+    }
+
+    if (attachment.contentType.startsWith("video/")) {
+      const previewButton = document.createElement("button");
+      previewButton.className = "message-media-trigger message-video-trigger";
+      previewButton.type = "button";
+      previewButton.dataset.mediaUrl = attachment.url;
+      previewButton.dataset.mediaType = attachment.contentType;
+      previewButton.dataset.mediaName = attachment.name;
+      previewButton.setAttribute("aria-label", `Play video ${attachment.name}`);
+      const video = document.createElement("video");
+      video.className = "message-media-image";
+      video.src = attachment.url;
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      const playLabel = document.createElement("span");
+      playLabel.className = "message-video-play";
+      playLabel.setAttribute("aria-hidden", "true");
+      playLabel.textContent = "▶";
+      previewButton.append(video, playLabel);
+      content.append(previewButton);
+      return;
+    }
+
+    if (attachment.contentType.startsWith("audio/")) {
+      const audio = document.createElement("audio");
+      audio.className = "message-media-player";
+      audio.src = attachment.url;
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.setAttribute("aria-label", attachment.name);
+      content.append(audio);
+      return;
+    }
+
+    const fileLink = document.createElement("a");
+    fileLink.className = "message-file-link";
+    fileLink.href = attachment.url;
+    fileLink.target = "_blank";
+    fileLink.rel = "noopener noreferrer";
+    fileLink.textContent = `${attachment.name} · ${formatFileSize(attachment.size)}`;
+    content.append(fileLink);
+  });
+
   const time = document.createElement("time");
   time.className = "message-time";
   time.dateTime = new Date(message.createdAt).toISOString();
@@ -554,7 +683,7 @@ function createMessage(message) {
     readMark.textContent = "✓✓";
     time.append(readMark);
   }
-  content.append(bubble, time);
+  content.append(time);
 
   if (outgoing) {
     row.append(content);
@@ -644,7 +773,7 @@ async function loadMessages() {
       );
       const latestMessage = conversation.messages.at(-1);
       if (latestMessage) {
-        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${getMessagePreview(latestMessage)}`;
         conversation.time = formatMessageTime(latestMessage.createdAt);
       }
     });
@@ -678,7 +807,7 @@ async function loadPersonalConversations() {
       );
       const latestMessage = conversation.messages.at(-1);
       if (latestMessage) {
-        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+        conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${getMessagePreview(latestMessage)}`;
         conversation.time = formatMessageTime(latestMessage.createdAt);
       }
     });
@@ -711,7 +840,7 @@ async function loadPersonalMessages(conversation) {
     );
     const latestMessage = conversation.messages.at(-1);
     if (latestMessage) {
-      conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${latestMessage.text}`;
+      conversation.preview = `${latestMessage.userId === currentUser.id ? "You" : latestMessage.sender}: ${getMessagePreview(latestMessage)}`;
       conversation.time = formatMessageTime(latestMessage.createdAt);
     }
 
@@ -765,7 +894,7 @@ async function loadGroupMessages(conversation) {
     );
     const latestMessage = conversation.messages.at(-1);
     if (latestMessage) {
-      conversation.preview = `${latestMessage.sender}: ${latestMessage.text}`;
+      conversation.preview = `${latestMessage.sender}: ${getMessagePreview(latestMessage)}`;
       conversation.time = formatMessageTime(latestMessage.createdAt);
       conversation.latestMessageAt = latestMessage.createdAt;
     }
@@ -998,26 +1127,89 @@ messageInput.addEventListener("keydown", (event) => {
 attachmentButton.addEventListener("click", () => attachmentInput.click());
 
 attachmentInput.addEventListener("change", () => {
-  selectedAttachments.push(...attachmentInput.files);
+  const incomingFiles = Array.from(attachmentInput.files);
+  let note = "";
+  incomingFiles.forEach((file) => {
+    if (!allowedAttachmentTypes.has(file.type)) {
+      note = `${file.name} is not a supported file type.`;
+      return;
+    }
+    if (file.size < 1 || file.size > maxAttachmentBytes) {
+      note = `${file.name} must be 25 MB or smaller.`;
+      return;
+    }
+    if (selectedAttachments.length >= maxAttachmentCount) {
+      note = `You can attach up to ${maxAttachmentCount} files to a message.`;
+      return;
+    }
+    selectedAttachments.push(file);
+  });
   attachmentInput.value = "";
   renderAttachments();
+  if (note) showAttachmentNote(note, true);
 });
 
 attachmentList.addEventListener("click", (event) => {
+  const previewButton = event.target.closest("[data-media-url]");
+  if (previewButton) {
+    openMediaPreview(previewButton);
+    return;
+  }
   const removeButton = event.target.closest("[data-attachment-index]");
   if (!removeButton) return;
   selectedAttachments.splice(Number(removeButton.dataset.attachmentIndex), 1);
   renderAttachments();
 });
 
+async function uploadAttachment(file) {
+  const formResponse = await fetch("/api/uploads/presign", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+    },
+    body: JSON.stringify({ contentType: file.type })
+  });
+  if (formResponse.status === 401) {
+    sessionStorage.removeItem("authToken");
+    window.location.replace("auth/login.html");
+    throw new Error("Your session has expired. Please sign in again.");
+  }
+
+  const form = await formResponse.json();
+  if (!formResponse.ok) throw new Error(form.error || "Unable to prepare the file upload.");
+
+  const formData = new FormData();
+  Object.entries(form.fields).forEach(([name, value]) => formData.append(name, value));
+  formData.append("file", file);
+  let uploadResponse;
+  try {
+    uploadResponse = await fetch(form.url, { method: "POST", body: formData });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Could not reach S3 for ${file.name}. Check the bucket CORS rule allows POST from ${window.location.origin}, or check your network connection.`
+      );
+    }
+    throw error;
+  }
+  if (!uploadResponse.ok) {
+    throw new Error(`S3 rejected ${file.name} (HTTP ${uploadResponse.status}). Check the bucket CORS configuration.`);
+  }
+
+  return {
+    key: form.key,
+    name: file.name,
+    contentType: file.type,
+    size: file.size
+  };
+}
+
 messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = messageInput.value.trim();
-  if (!text) return;
-  if (selectedAttachments.length > 0) {
-    attachmentNote.textContent = "File upload is not connected yet. Remove attachments before sending.";
-    attachmentNote.classList.add("error");
-    attachmentNote.hidden = false;
+  if (!text && selectedAttachments.length === 0) {
+    showAttachmentNote("Write a message or attach at least one file.", true);
     return;
   }
 
@@ -1025,86 +1217,30 @@ messageForm.addEventListener("submit", async (event) => {
   const submitButton = messageForm.querySelector('button[type="submit"]');
   submitButton.disabled = true;
 
-  if (conversation.isPersonal) {
-    try {
-      const response = await fetch("/api/personal-messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
-        },
-        body: JSON.stringify({ recipientId: conversation.recipientId, message: text })
-      });
-
-      if (response.status === 401) {
-        sessionStorage.removeItem("authToken");
-        window.location.replace("auth/login.html");
-        return;
-      }
-
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Unable to send personal message.");
-
-      addMessage(conversation, result.message);
-      messageInput.value = "";
-      messageInput.style.height = "auto";
-      renderConversations();
-      renderMessages();
-      messageInput.focus({ preventScroll: true });
-    } catch (error) {
-      console.error("Sending personal message failed:", error);
-      showChatNotice(error.message || "Could not send message. Please try again.", "chat-notice error", false);
-    } finally {
-      submitButton.disabled = false;
-    }
-    return;
-  }
-
-  if (conversation.isGroup) {
-    try {
-      const response = await fetch(`/api/groups/${encodeURIComponent(conversation.groupId)}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
-        },
-        body: JSON.stringify({ message: text })
-      });
-
-      if (response.status === 401) {
-        sessionStorage.removeItem("authToken");
-        window.location.replace("auth/login.html");
-        return;
-      }
-
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Unable to send group message.");
-
-      addMessage(conversation, result.message);
-      messageInput.value = "";
-      messageInput.style.height = "auto";
-      renderConversations();
-      renderMessages();
-      messageInput.focus({ preventScroll: true });
-    } catch (error) {
-      console.error("Sending group message failed:", error);
-      showChatNotice(error.message || "Could not send group message. Please try again.", "chat-notice error", false);
-    } finally {
-      submitButton.disabled = false;
-    }
-    return;
-  }
-
   try {
-    const response = await fetch("/api/messages", {
+    let attachments = [];
+    if (selectedAttachments.length > 0) {
+      showAttachmentNote(`Uploading ${selectedAttachments.length} ${selectedAttachments.length === 1 ? "file" : "files"}...`);
+      attachments = await Promise.all(selectedAttachments.map(uploadAttachment));
+    }
+
+    const endpoint = conversation.isPersonal
+      ? "/api/personal-messages"
+      : conversation.isGroup
+        ? `/api/groups/${encodeURIComponent(conversation.groupId)}/messages`
+        : "/api/messages";
+    const payload = { message: text, attachments };
+    if (conversation.isPersonal) payload.recipientId = conversation.recipientId;
+    else if (!conversation.isGroup) payload.conversationId = conversation.id;
+
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
       },
-      body: JSON.stringify({ conversationId: conversation.id, message: text })
+      body: JSON.stringify(payload)
     });
-
     if (response.status === 401) {
       sessionStorage.removeItem("authToken");
       window.location.replace("auth/login.html");
@@ -1117,19 +1253,86 @@ messageForm.addEventListener("submit", async (event) => {
     addMessage(conversation, result.message);
     messageInput.value = "";
     messageInput.style.height = "auto";
+    selectedAttachments.splice(0, selectedAttachments.length);
+    renderAttachments();
     renderConversations();
     renderMessages();
     messageInput.focus({ preventScroll: true });
   } catch (error) {
     console.error("Sending message failed:", error);
+    showAttachmentNote(error.message || "Could not send message. Please try again.", true);
     showChatNotice(error.message || "Could not send message. Please try again.", "chat-notice error", false);
   } finally {
     submitButton.disabled = false;
   }
 });
-
 backButton.addEventListener("click", () => {
   app.classList.remove("show-conversation");
+});
+
+function closeMediaPreview() {
+  if (!mediaDialog.open) return;
+  mediaDialog.close();
+}
+
+function openMediaPreview(trigger) {
+  const isVideo = trigger.dataset.mediaType.startsWith("video/");
+  const media = document.createElement(isVideo ? "video" : "img");
+  media.className = "media-dialog-media";
+  media.src = trigger.dataset.mediaUrl;
+  media.alt = trigger.dataset.mediaName;
+  if (isVideo) {
+    media.controls = true;
+    media.autoplay = true;
+    media.playsInline = true;
+    media.addEventListener("error", () => {
+      const error = document.createElement("p");
+      error.className = "media-dialog-error";
+      error.setAttribute("role", "status");
+      error.textContent = "This video could not be played. Try again later.";
+      mediaDialogContent.append(error);
+    }, { once: true });
+  }
+
+  mediaDialogName.textContent = trigger.dataset.mediaName;
+  mediaDialogOpener = trigger;
+  mediaDialogContent.replaceChildren(media);
+  mediaDialog.returnValue = "";
+  mediaDialog.showModal();
+  if (isVideo) {
+    media.play().catch((error) => {
+      if (error.name !== "NotAllowedError") {
+        console.error("Playing chat video preview failed:", error);
+      }
+    });
+  }
+}
+
+messageList.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-media-url]");
+  if (trigger) openMediaPreview(trigger);
+});
+
+mediaDialogClose.addEventListener("click", closeMediaPreview);
+mediaDialog.addEventListener("click", (event) => {
+  if (event.target === mediaDialog) {
+    mediaDialog.returnValue = "backdrop";
+    closeMediaPreview();
+    return;
+  }
+  if (event.target instanceof Element && event.target.closest(".media-dialog-panel")) {
+    return;
+  }
+  closeMediaPreview();
+});
+mediaDialog.addEventListener("close", () => {
+  mediaDialogContent.replaceChildren();
+  mediaDialogName.textContent = "";
+  const focusTarget = mediaDialogOpener && mediaDialogOpener.isConnected
+    ? mediaDialogOpener
+    : messageInput;
+  mediaDialogOpener = null;
+  focusTarget.focus({ preventScroll: true });
 });
 
 document.addEventListener("keydown", (event) => {

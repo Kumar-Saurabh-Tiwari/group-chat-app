@@ -91,8 +91,8 @@
         <form class="composer" id="message-form">
           <div class="composer-box">
             <label class="visually-hidden" for="message-input">Write a message</label>
-            <textarea id="message-input" rows="1" maxlength="2000" placeholder="Write a message..." required></textarea>
-            <input id="attachment-input" class="visually-hidden" type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt" multiple>
+            <textarea id="message-input" rows="1" maxlength="2000" placeholder="Write a message..."></textarea>
+            <input id="attachment-input" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,audio/mpeg,audio/ogg,audio/wav,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" multiple>
             <div class="attachment-list" id="attachment-list" aria-live="polite"></div>
             <div class="composer-footer">
               <div class="composer-actions">
@@ -106,11 +106,20 @@
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 14-7-4 14-3-6-7-1Z"></path><path d="m12 13 7-8"></path></svg>
               </button>
             </div>
-            <p class="attachment-note" id="attachment-note">Attachments are previews only and won’t be sent yet.</p>
+            <p class="attachment-note" id="attachment-note" role="status" aria-live="polite"></p>
           </div>
         </form>
       </section>
     </main>
+    <dialog class="media-dialog" id="media-dialog" aria-labelledby="media-dialog-name">
+      <div class="media-dialog-panel">
+        <header class="media-dialog-header">
+          <p class="media-dialog-name" id="media-dialog-name"></p>
+          <button class="media-dialog-close" id="media-dialog-close" type="button" aria-label="Close preview">×</button>
+        </header>
+        <div class="media-dialog-content" id="media-dialog-content"></div>
+      </div>
+    </dialog>
     <script src="/socket.io/socket.io.js"></script>
     <script src="chat.js"></script>
   </body>

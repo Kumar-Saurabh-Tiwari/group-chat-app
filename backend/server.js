@@ -8,6 +8,12 @@ const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
 const createSocketServer = require("./socket-io");
 const personalRoomId = require("./socket-io/personal-room");
+const {
+  ALLOWED_CONTENT_TYPES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_UPLOAD_BYTES,
+  createS3Storage
+} = require("./services/s3-storage");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -28,6 +34,7 @@ const database = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0
 });
+const s3Storage = createS3Storage();
 
 app.use(express.json({ limit: "10kb" }));
 
@@ -56,6 +63,132 @@ function isDatabaseUnavailable(error) {
   return ["ECONNREFUSED", "ER_ACCESS_DENIED_ERROR", "ER_BAD_DB_ERROR", "PROTOCOL_CONNECTION_LOST"].includes(error.code);
 }
 
+function getChatDatabaseError(error, fallback) {
+  if (isDatabaseUnavailable(error)) {
+    return {
+      status: 503,
+      message: "The database is unavailable. Check the backend database settings."
+    };
+  }
+  if (error.code === "ER_NO_SUCH_TABLE" && /chat_message_attachments/i.test(error.message)) {
+    return {
+      status: 503,
+      message: "The chat_message_attachments table is missing. Run backend/schema.sql against the configured database."
+    };
+  }
+  return { status: 500, message: fallback };
+}
+
+function parseMessagePayload(body, userId) {
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (body.message !== undefined && typeof body.message !== "string") {
+    return { error: "Message must be text." };
+  }
+  if (message.length > 2000) {
+    return { error: "Message must be 2000 characters or fewer." };
+  }
+
+  const rawAttachments = body.attachments === undefined ? [] : body.attachments;
+  if (!Array.isArray(rawAttachments) || rawAttachments.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    return { error: `Attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} files to a message.` };
+  }
+  if (!message && rawAttachments.length === 0) {
+    return { error: "Write a message or attach at least one file." };
+  }
+
+  const attachments = [];
+  for (const attachment of rawAttachments) {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
+      return { error: "One of the attachments is invalid." };
+    }
+
+    const name = typeof attachment.name === "string" ? attachment.name.trim().split(/[\\/]/).pop() : "";
+    const contentType = attachment.contentType;
+    const size = attachment.size;
+    const key = attachment.key;
+    const keyPattern = new RegExp(`^chat-uploads/${userId}/[0-9a-f-]{36}$`);
+    if (!name || name.length > 255 || /[\u0000-\u001f\u007f]/.test(name)) {
+      return { error: "Attachment names must be between 1 and 255 printable characters." };
+    }
+    if (typeof key !== "string" || !keyPattern.test(key)) {
+      return { error: "One of the uploaded files is invalid." };
+    }
+    if (typeof contentType !== "string" || !ALLOWED_CONTENT_TYPES.has(contentType)) {
+      return { error: "One of the selected file types is not supported." };
+    }
+    if (!Number.isInteger(size) || size < 1 || size > MAX_UPLOAD_BYTES) {
+      return { error: "Files must be 25 MB or smaller." };
+    }
+    attachments.push({ key, name, contentType, size });
+  }
+
+  return { message, attachments };
+}
+
+async function saveMessage({ conversationId, userId, message, attachments }) {
+  await Promise.all(attachments.map((attachment) => s3Storage.verifyUploadedObject({
+    userId: String(userId),
+    key: attachment.key,
+    contentType: attachment.contentType,
+    size: attachment.size
+  })));
+
+  const connection = await database.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [result] = await connection.execute(
+      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
+      [conversationId, userId, message]
+    );
+    for (const attachment of attachments) {
+      await connection.execute(
+        `INSERT INTO chat_message_attachments
+           (message_id, object_key, file_name, content_type, file_size)
+         VALUES (?, ?, ?, ?, ?)`,
+        [result.insertId, attachment.key, attachment.name, attachment.contentType, attachment.size]
+      );
+    }
+    await connection.commit();
+    return result.insertId;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function addAttachmentsToMessages(messages) {
+  if (messages.length === 0) return messages;
+  const messageIds = messages.map(({ id }) => id);
+  const placeholders = messageIds.map(() => "?").join(", ");
+  const [rows] = await database.execute(
+    `SELECT id, message_id, object_key, file_name, content_type, file_size
+     FROM chat_message_attachments
+     WHERE message_id IN (${placeholders})
+     ORDER BY id`,
+    messageIds
+  );
+  const attachmentsByMessage = new Map(messageIds.map((id) => [String(id), []]));
+  await Promise.all(rows.map(async (row) => {
+    attachmentsByMessage.get(String(row.message_id)).push({
+      id: String(row.id),
+      name: row.file_name,
+      contentType: row.content_type,
+      size: row.file_size,
+      url: await s3Storage.createDownloadUrl({
+        key: row.object_key,
+        contentType: row.content_type,
+        fileName: row.file_name
+      })
+    });
+  }));
+  return messages.map((message) => ({
+    ...message,
+    attachments: attachmentsByMessage.get(String(message.id))
+  }));
+}
+
 function requireAuth(req, res, next) {
   const authorization = req.get("authorization") || "";
   const [scheme, token, ...extraParts] = authorization.split(" ");
@@ -81,6 +214,28 @@ function requireAuth(req, res, next) {
     return res.status(500).json({ error: "Unable to verify your session." });
   }
 }
+
+app.post("/api/uploads/presign", requireAuth, async (req, res) => {
+  const { contentType } = req.body || {};
+  if (typeof contentType !== "string" || !ALLOWED_CONTENT_TYPES.has(contentType)) {
+    return res.status(400).json({ error: "This file type is not supported." });
+  }
+
+  try {
+    return res.json(await s3Storage.createUploadForm({
+      userId: String(req.authUser.id),
+      contentType
+    }));
+  } catch (error) {
+    console.error("Creating file upload form failed:", error);
+    const configurationError = /S3_BUCKET|AWS_REGION|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/.test(error.message);
+    return res.status(configurationError ? 503 : 500).json({
+      error: configurationError
+        ? "File uploads are not configured. Set AWS_REGION, S3_BUCKET, and both AWS credentials in backend/.env."
+        : "Unable to prepare the file upload."
+    });
+  }
+});
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
   return res.json({ user: req.authUser });
@@ -197,17 +352,18 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
        ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
       roomIds
     );
+    const savedMessages = await addAttachmentsToMessages(messages.map((message) => ({
+      id: String(message.id),
+      conversationId: message.conversation_id,
+      userId: String(message.user_id),
+      sender: message.sender,
+      senderEmail: message.sender_email,
+      text: message.message,
+      createdAt: message.created_at
+    })));
     const messagesByRoom = new Map(roomIds.map((roomId) => [roomId, []]));
-    messages.forEach((message) => {
-      messagesByRoom.get(message.conversation_id).push({
-        id: String(message.id),
-        conversationId: message.conversation_id,
-        userId: String(message.user_id),
-        sender: message.sender,
-        senderEmail: message.sender_email,
-        text: message.message,
-        createdAt: message.created_at
-      });
+    savedMessages.forEach((message) => {
+      messagesByRoom.get(message.conversationId).push(message);
     });
 
     return res.json({
@@ -222,11 +378,8 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("Loading personal conversations failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to load personal conversations."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to load personal conversations.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
@@ -432,34 +585,30 @@ app.get("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
        ORDER BY chat_messages.created_at ASC, chat_messages.id ASC`,
       [groupConversationId(groupId)]
     );
-    return res.json({
-      messages: messages.map((message) => ({
-        id: String(message.id),
-        conversationId: message.conversation_id,
-        userId: String(message.user_id),
-        sender: message.sender,
-        text: message.message,
-        createdAt: message.created_at
-      }))
-    });
+    const mappedMessages = await addAttachmentsToMessages(messages.map((message) => ({
+      id: String(message.id),
+      conversationId: message.conversation_id,
+      userId: String(message.user_id),
+      sender: message.sender,
+      text: message.message,
+      createdAt: message.created_at
+    })));
+    return res.json({ messages: mappedMessages });
   } catch (error) {
     console.error("Loading group messages failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to load group messages."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to load group messages.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
 app.post("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
   const { groupId } = req.params;
-  const { message } = req.body || {};
+  const parsedMessage = parseMessagePayload(req.body || {}, req.authUser.id);
   if (!/^[1-9][0-9]{0,19}$/.test(groupId)) {
     return res.status(400).json({ error: "A valid group ID is required." });
   }
-  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
-    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  if (parsedMessage.error) {
+    return res.status(400).json({ error: parsedMessage.error });
   }
 
   try {
@@ -468,37 +617,35 @@ app.post("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
     }
 
     const conversationId = groupConversationId(groupId);
-    const [result] = await database.execute(
-      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
-      [conversationId, req.authUser.id, message.trim()]
-    );
+    const messageId = await saveMessage({
+      conversationId,
+      userId: req.authUser.id,
+      ...parsedMessage
+    });
     const [savedMessages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
               users.name AS sender, chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.id = ?`,
-      [result.insertId]
+      [messageId]
     );
     const savedMessage = savedMessages[0];
-    const responseMessage = {
+    const [responseMessage] = await addAttachmentsToMessages([{
       id: String(savedMessage.id),
       conversationId: savedMessage.conversation_id,
       userId: String(savedMessage.user_id),
       sender: savedMessage.sender,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
-    };
+    }]);
 
     chatRealtime.publishMessage(responseMessage);
     return res.status(201).json({ message: responseMessage });
   } catch (error) {
     console.error("Saving group message failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to save the group message."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to save the group message.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
@@ -524,68 +671,63 @@ app.get("/api/messages", requireAuth, async (req, res) => {
       conversationId === undefined ? [] : [conversationId]
     );
 
-    return res.json({
-      messages: messages.map((message) => ({
+    const mappedMessages = await addAttachmentsToMessages(messages.map((message) => ({
         id: String(message.id),
         conversationId: message.conversation_id,
         userId: String(message.user_id),
         sender: message.sender,
         text: message.message,
         createdAt: message.created_at
-      }))
-    });
+    })));
+    return res.json({ messages: mappedMessages });
   } catch (error) {
     console.error("Loading messages failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to load messages."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to load messages.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
 app.post("/api/messages", requireAuth, async (req, res) => {
-  const { conversationId, message } = req.body || {};
+  const { conversationId } = req.body || {};
+  const parsedMessage = parseMessagePayload(req.body || {}, req.authUser.id);
   if (!isValidConversationId(conversationId) || isGroupConversationId(conversationId)) {
     return res.status(400).json({ error: "A valid non-group conversationId is required." });
   }
-  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
-    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  if (parsedMessage.error) {
+    return res.status(400).json({ error: parsedMessage.error });
   }
 
   try {
-    const [result] = await database.execute(
-      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
-      [conversationId, req.authUser.id, message.trim()]
-    );
+    const messageId = await saveMessage({
+      conversationId,
+      userId: req.authUser.id,
+      ...parsedMessage
+    });
     const [messages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
               users.name AS sender, chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.id = ?`,
-      [result.insertId]
+      [messageId]
     );
     const savedMessage = messages[0];
 
-    const responseMessage = {
+    const [responseMessage] = await addAttachmentsToMessages([{
       id: String(savedMessage.id),
       conversationId: savedMessage.conversation_id,
       userId: String(savedMessage.user_id),
       sender: savedMessage.sender,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
-    };
+    }]);
     chatRealtime.publishMessage(responseMessage);
 
     return res.status(201).json({ message: responseMessage });
   } catch (error) {
     console.error("Saving message failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to save the message."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to save the message.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
@@ -615,29 +757,26 @@ app.get("/api/personal-messages", requireAuth, async (req, res) => {
       [conversationId]
     );
 
-    return res.json({
-      messages: messages.map((message) => ({
-        id: String(message.id),
-        conversationId: message.conversation_id,
-        userId: String(message.user_id),
-        sender: message.sender,
-        senderEmail: message.sender_email,
-        text: message.message,
-        createdAt: message.created_at
-      }))
-    });
+    const mappedMessages = await addAttachmentsToMessages(messages.map((message) => ({
+      id: String(message.id),
+      conversationId: message.conversation_id,
+      userId: String(message.user_id),
+      sender: message.sender,
+      senderEmail: message.sender_email,
+      text: message.message,
+      createdAt: message.created_at
+    })));
+    return res.json({ messages: mappedMessages });
   } catch (error) {
     console.error("Loading personal messages failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to load personal messages."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to load personal messages.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
 app.post("/api/personal-messages", requireAuth, async (req, res) => {
-  const { recipientId, message } = req.body || {};
+  const { recipientId } = req.body || {};
+  const parsedMessage = parseMessagePayload(req.body || {}, req.authUser.id);
   if (
     typeof recipientId !== "string" ||
     !/^[0-9]{1,20}$/.test(recipientId) ||
@@ -645,8 +784,8 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
   ) {
     return res.status(400).json({ error: "A valid other recipient ID is required." });
   }
-  if (typeof message !== "string" || !message.trim() || message.trim().length > 2000) {
-    return res.status(400).json({ error: "Message must be between 1 and 2000 characters." });
+  if (parsedMessage.error) {
+    return res.status(400).json({ error: parsedMessage.error });
   }
 
   try {
@@ -655,10 +794,11 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
     }
 
     const conversationId = personalRoomId(req.authUser.id, recipientId);
-    const [result] = await database.execute(
-      "INSERT INTO chat_messages (conversation_id, user_id, message) VALUES (?, ?, ?)",
-      [conversationId, req.authUser.id, message.trim()]
-    );
+    const messageId = await saveMessage({
+      conversationId,
+      userId: req.authUser.id,
+      ...parsedMessage
+    });
     const [messages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
               users.name AS sender, users.email AS sender_email,
@@ -666,10 +806,10 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.id = ?`,
-      [result.insertId]
+      [messageId]
     );
     const savedMessage = messages[0];
-    const responseMessage = {
+    const [responseMessage] = await addAttachmentsToMessages([{
       id: String(savedMessage.id),
       conversationId: savedMessage.conversation_id,
       userId: String(savedMessage.user_id),
@@ -677,17 +817,14 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
       senderEmail: savedMessage.sender_email,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
-    };
+    }]);
 
     chatRealtime.publishPersonalMessage(responseMessage, recipientId);
     return res.status(201).json({ message: responseMessage });
   } catch (error) {
     console.error("Saving personal message failed:", error);
-    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
-      error: isDatabaseUnavailable(error)
-        ? "The database is unavailable. Check the backend database settings."
-        : "Unable to save the personal message."
-    });
+    const databaseError = getChatDatabaseError(error, "Unable to save the personal message.");
+    return res.status(databaseError.status).json({ error: databaseError.message });
   }
 });
 
