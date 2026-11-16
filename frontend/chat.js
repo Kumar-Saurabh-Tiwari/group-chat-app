@@ -76,6 +76,13 @@ const mediaDialogClose = document.querySelector("#media-dialog-close");
 const backButton = document.querySelector("#back-button");
 const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
+const profileDialog = document.querySelector("#profile-dialog");
+const profileForm = document.querySelector("#profile-form");
+const profileNameInput = document.querySelector("#profile-name");
+const profileImageInput = document.querySelector("#profile-image");
+const profileStatus = document.querySelector("#profile-status");
+const profileSave = document.querySelector("#profile-save");
+const profileCancel = document.querySelector("#profile-cancel");
 const logoutButton = document.querySelector("#logout-button");
 const logoutDialog = document.querySelector("#logout-dialog");
 const logoutConfirm = document.querySelector("#logout-confirm");
@@ -107,6 +114,8 @@ let attachmentPreviewUrls = [];
 let mediaDialogOpener = null;
 const maxAttachmentCount = 5;
 const maxAttachmentBytes = 25 * 1024 * 1024;
+const maxProfileImageBytes = 5 * 1024 * 1024;
+const allowedProfileImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedAttachmentTypes = new Set([
   "image/jpeg",
   "image/png",
@@ -256,6 +265,9 @@ function addMessage(conversation, message) {
   if (ids.has(message.id)) return false;
 
   ids.add(message.id);
+  if (conversation.isPersonal && message.userId !== currentUser.id && message.senderImageUrl) {
+    conversation.imageUrl = message.senderImageUrl;
+  }
   conversation.messages.push(message);
   const preview = getMessagePreview(message);
   conversation.preview = `${message.userId === currentUser.id ? "You" : message.sender}: ${preview}`;
@@ -382,7 +394,8 @@ function connectRealtime() {
       conversation = getOrCreatePersonalConversation(message.conversationId, {
         id: message.userId,
         name: message.sender,
-        email: message.senderEmail || ""
+        email: message.senderEmail || "",
+        imageUrl: message.senderImageUrl
       });
     }
     if (!conversation || !conversation.isPersonal || !addMessage(conversation, message)) return;
@@ -432,7 +445,7 @@ async function verifySession() {
 
     const result = await response.json();
     currentUser = result.user;
-    profileAvatar.textContent = currentUser.name.slice(0, 1).toUpperCase();
+    renderProfileAvatar();
     document.body.classList.add("authenticated");
     return true;
   } catch (error) {
@@ -440,6 +453,27 @@ async function verifySession() {
     console.error("Session verification failed:", error);
     return false;
   }
+}
+
+function renderProfileAvatar() {
+  const initial = currentUser.name.slice(0, 1).toUpperCase();
+  profileAvatar.setAttribute("aria-label", `Edit ${currentUser.name}'s profile`);
+  profileAvatar.title = "Edit profile";
+
+  if (!currentUser.imageUrl) {
+    profileAvatar.replaceChildren();
+    profileAvatar.textContent = initial;
+    return;
+  }
+
+  const image = document.createElement("img");
+  image.src = currentUser.imageUrl;
+  image.alt = "";
+  image.addEventListener("error", () => {
+    profileAvatar.replaceChildren();
+    profileAvatar.textContent = initial;
+  }, { once: true });
+  profileAvatar.replaceChildren(image);
 }
 
 function getActiveConversation() {
@@ -454,12 +488,18 @@ function getOrCreatePersonalConversation(id, user) {
   let conversation = conversationsById.get(id);
   if (conversation) {
     if (!conversation.email && user.email) conversation.email = user.email;
+    if (user.name) {
+      conversation.name = user.name;
+      conversation.initials = user.name.slice(0, 1).toUpperCase();
+    }
+    if (user.imageUrl) conversation.imageUrl = user.imageUrl;
     return conversation;
   }
   conversation = {
     id,
     name: user.name,
     email: user.email,
+    imageUrl: user.imageUrl,
     recipientId: user.id,
     initials: user.name.slice(0, 1).toUpperCase(),
     color: "#d8d1fa",
@@ -512,12 +552,30 @@ function getOrCreateGroupConversation(group) {
   return conversation;
 }
 
-function makeAvatar(initials, background, color, className) {
+function renderAvatarContent(avatar, initials, imageUrl) {
+  avatar.replaceChildren();
+  if (!imageUrl) {
+    avatar.textContent = initials;
+    return;
+  }
+
+  const image = document.createElement("img");
+  image.src = imageUrl;
+  image.alt = "";
+  image.loading = "lazy";
+  image.addEventListener("error", () => {
+    avatar.replaceChildren();
+    avatar.textContent = initials;
+  }, { once: true });
+  avatar.append(image);
+}
+
+function makeAvatar(initials, background, color, className, imageUrl) {
   const avatar = document.createElement("span");
   avatar.className = className;
-  avatar.textContent = initials;
   avatar.style.backgroundColor = background;
   avatar.style.color = color;
+  renderAvatarContent(avatar, initials, imageUrl);
   return avatar;
 }
 
@@ -558,7 +616,13 @@ function renderConversations() {
     button.dataset.conversationId = conversation.id;
     button.setAttribute("aria-current", conversation.id === activeConversationId ? "true" : "false");
 
-    const avatar = makeAvatar(conversation.initials, conversation.color, conversation.textColor, "conversation-avatar");
+    const avatar = makeAvatar(
+      conversation.initials,
+      conversation.color,
+      conversation.textColor,
+      "conversation-avatar",
+      conversation.imageUrl
+    );
 
     const copy = document.createElement("span");
     copy.className = "conversation-copy";
@@ -712,16 +776,22 @@ function createMessage(message) {
     row.append(content);
   } else {
     const [background, color] = getSenderColors(message.sender);
-    row.append(makeAvatar(message.sender.slice(0, 1).toUpperCase(), background, color, "message-sender-avatar"), content);
+    row.append(makeAvatar(
+      message.sender.slice(0, 1).toUpperCase(),
+      background,
+      color,
+      "message-sender-avatar",
+      message.senderImageUrl
+    ), content);
   }
   return row;
 }
 
 function renderMessages() {
   const conversation = getActiveConversation();
-  chatAvatar.textContent = conversation.initials;
   chatAvatar.style.backgroundColor = conversation.color;
   chatAvatar.style.color = conversation.textColor;
+  renderAvatarContent(chatAvatar, conversation.initials, conversation.imageUrl);
   chatTitle.textContent = conversation.name;
   chatSubtitle.textContent = conversation.isPersonal
     ? `Personal chat · ${conversation.email}`
@@ -1313,6 +1383,49 @@ attachmentList.addEventListener("click", (event) => {
   renderAttachments();
 });
 
+async function uploadProfileImage(file) {
+  const formResponse = await fetch("/api/profile/image/presign", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+    },
+    body: JSON.stringify({ contentType: file.type })
+  });
+  if (formResponse.status === 401) {
+    sessionStorage.removeItem("authToken");
+    window.location.replace("auth/login.html");
+    throw new Error("Your session has expired. Please sign in again.");
+  }
+
+  const form = await formResponse.json();
+  if (!formResponse.ok) throw new Error(form.error || "Unable to prepare the profile image upload.");
+
+  const formData = new FormData();
+  Object.entries(form.fields).forEach(([name, value]) => formData.append(name, value));
+  formData.append("file", file);
+  let uploadResponse;
+  try {
+    uploadResponse = await fetch(form.url, { method: "POST", body: formData });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Could not reach S3. Check the bucket CORS rule allows POST from ${window.location.origin}, or check your network connection.`
+      );
+    }
+    throw error;
+  }
+  if (!uploadResponse.ok) {
+    throw new Error(`S3 rejected the profile image (HTTP ${uploadResponse.status}). Check the bucket CORS configuration.`);
+  }
+
+  return {
+    key: form.key,
+    contentType: file.type,
+    size: file.size
+  };
+}
+
 async function uploadAttachment(file) {
   const formResponse = await fetch("/api/uploads/presign", {
     method: "POST",
@@ -1424,6 +1537,69 @@ messageForm.addEventListener("submit", async (event) => {
 });
 backButton.addEventListener("click", () => {
   app.classList.remove("show-conversation");
+});
+
+profileAvatar.addEventListener("click", () => {
+  profileNameInput.value = currentUser.name;
+  profileImageInput.value = "";
+  profileStatus.textContent = "";
+  profileStatus.classList.remove("error");
+  profileDialog.showModal();
+});
+
+profileCancel.addEventListener("click", () => profileDialog.close());
+
+profileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = profileNameInput.value.trim();
+  const file = profileImageInput.files[0];
+  if (!name || name.length > 100) {
+    profileStatus.textContent = "Name must be between 1 and 100 characters.";
+    profileStatus.classList.add("error");
+    return;
+  }
+  if (file && (!allowedProfileImageTypes.has(file.type) || file.size < 1 || file.size > maxProfileImageBytes)) {
+    profileStatus.textContent = "Choose a JPEG, PNG, or WebP image up to 5 MB.";
+    profileStatus.classList.add("error");
+    return;
+  }
+
+  profileSave.disabled = true;
+  profileCancel.disabled = true;
+  profileSave.textContent = file ? "Uploading..." : "Saving...";
+  profileStatus.textContent = file ? "Uploading your image..." : "";
+  profileStatus.classList.remove("error");
+  try {
+    const image = file ? await uploadProfileImage(file) : undefined;
+    profileSave.textContent = "Saving...";
+    const response = await fetch("/api/auth/profile", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionStorage.getItem("authToken")}`
+      },
+      body: JSON.stringify({ name, ...(image ? { image } : {}) })
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem("authToken");
+      window.location.replace("auth/login.html");
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to update your profile.");
+    currentUser = result.user;
+    renderProfileAvatar();
+    profileDialog.close();
+  } catch (error) {
+    profileStatus.textContent = error.message || "Unable to update your profile.";
+    profileStatus.classList.add("error");
+    console.error("Updating profile failed:", error);
+  } finally {
+    profileSave.disabled = false;
+    profileCancel.disabled = false;
+    profileSave.textContent = "Save changes";
+  }
 });
 
 logoutButton.addEventListener("click", () => {

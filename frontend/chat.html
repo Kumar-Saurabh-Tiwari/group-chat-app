@@ -16,7 +16,7 @@
             <span class="brand-mark" aria-hidden="true">g</span>
             <span>groupchat</span>
           </a>
-          <span class="profile-avatar" id="profile-avatar" aria-label="Your profile"></span>
+          <button class="profile-avatar" id="profile-avatar" type="button" aria-label="Edit profile" title="Edit profile"></button>
         </header>
 
         <div class="inbox-heading">
@@ -112,6 +112,25 @@
         </form>
       </section>
     </main>
+    <dialog class="profile-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title">
+      <form class="profile-dialog-panel" id="profile-form">
+        <h2 id="profile-dialog-title">Edit profile</h2>
+        <label class="profile-field" for="profile-name">
+          <span>Name</span>
+          <input id="profile-name" type="text" maxlength="100" autocomplete="name" required>
+        </label>
+        <label class="profile-field" for="profile-image">
+          <span>Profile image</span>
+          <input id="profile-image" type="file" accept="image/jpeg,image/png,image/webp">
+          <small>JPEG, PNG, or WebP up to 5 MB</small>
+        </label>
+        <p class="profile-status" id="profile-status" role="status" aria-live="polite"></p>
+        <div class="logout-dialog-actions">
+          <button type="button" id="profile-cancel">Cancel</button>
+          <button class="profile-save-button" type="submit" id="profile-save">Save changes</button>
+        </div>
+      </form>
+    </dialog>
     <dialog class="logout-dialog" id="logout-dialog" aria-labelledby="logout-dialog-title" aria-describedby="logout-dialog-description">
       <div class="logout-dialog-panel">
         <span class="logout-dialog-icon" aria-hidden="true">↪</span>

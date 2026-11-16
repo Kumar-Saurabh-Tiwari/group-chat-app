@@ -17,7 +17,7 @@ Group Chat App
 ## Run locally
 
 1. Make sure Node.js 18+ and MySQL are installed and running.
-2. Initialize the database tables by running `backend/schema.sql` in MySQL. Run it again on an existing database to create any missing chat, archive, and group tables and the archive index.
+2. Initialize the database tables by running `backend/schema.sql` in MySQL. Run it again on an existing database to create any missing chat, archive, and group tables, profile fields, and indexes.
 3. In `backend/`, copy `.env.example` to `.env` and set your MySQL password.
 4. Set `JWT_SECRET` in `backend/.env` to a random secret of at least 32 characters. Generate one with:
    `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
@@ -34,9 +34,9 @@ Group Chat App
 
 Set `AWS_REGION` and either `S3_BUCKET` or `AWS_S3_BUCKET_NAME` in `backend/.env`. For local development, set both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; alternatively, the AWS SDK uses its default credential provider chain (such as an IAM role or configured AWS profile). Do not commit credentials.
 
-The chat uses authenticated presigned POSTs to upload files directly to S3, verifies each upload before saving the message, and generates short-lived signed links for private media. Messages can include up to five files (25 MiB each), with or without text. Supported file types are listed in `backend/services/s3-storage.js`.
+The chat uses authenticated presigned POSTs to upload files directly to S3, verifies each upload before saving the message, and generates short-lived signed links for private media. Messages can include up to five files (25 MiB each), with or without text. Users can also update their name and upload a JPEG, PNG, or WebP profile image (up to 5 MiB). Supported file types are listed in `backend/services/s3-storage.js`.
 
-Keep S3 Block Public Access enabled and grant the app identity only `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket-name>/chat-uploads/*`. In the S3 bucket's **Permissions → Cross-origin resource sharing (CORS)** settings, add a rule like this, replacing the origins with the exact origins used to open the app (scheme, host, and port must match):
+Keep S3 Block Public Access enabled and grant the app identity only `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket-name>/chat-uploads/*` and `arn:aws:s3:::<bucket-name>/profile-images/*`. In the S3 bucket's **Permissions → Cross-origin resource sharing (CORS)** settings, add a rule like this, replacing the origins with the exact origins used to open the app (scheme, host, and port must match):
 
 ```json
 [
@@ -50,7 +50,7 @@ Keep S3 Block Public Access enabled and grant the app identity only `s3:PutObjec
 ]
 ```
 
-For an existing database, run `backend/schema.sql` again against the database selected by `DB_NAME`. It creates any missing attachment and archive tables and adds the archive-selection index without replacing existing data.
+For an existing database, run `backend/schema.sql` again against the database selected by `DB_NAME`. It creates any missing attachment and archive tables, adds profile fields and the archive-selection index without replacing existing data.
 
 Attachments are shared through the same group, personal, and conversation message permissions as their message.
 

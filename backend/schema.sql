@@ -10,11 +10,43 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(254) NOT NULL,
   phone VARCHAR(15) NOT NULL,
   password_hash VARCHAR(60) NOT NULL,
+  profile_image_key VARCHAR(512) DEFAULT NULL,
+  profile_image_content_type VARCHAR(127) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY users_email_unique (email),
   UNIQUE KEY users_phone_unique (phone)
 );
+
+SET @users_profile_image_key_sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE users ADD COLUMN profile_image_key VARCHAR(512) DEFAULT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'users'
+    AND column_name = 'profile_image_key'
+);
+PREPARE users_profile_image_key_statement FROM @users_profile_image_key_sql;
+EXECUTE users_profile_image_key_statement;
+DEALLOCATE PREPARE users_profile_image_key_statement;
+
+SET @users_profile_image_content_type_sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE users ADD COLUMN profile_image_content_type VARCHAR(127) DEFAULT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'users'
+    AND column_name = 'profile_image_content_type'
+);
+PREPARE users_profile_image_content_type_statement FROM @users_profile_image_content_type_sql;
+EXECUTE users_profile_image_content_type_statement;
+DEALLOCATE PREPARE users_profile_image_content_type_statement;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

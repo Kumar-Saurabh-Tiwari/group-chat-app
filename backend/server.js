@@ -14,7 +14,9 @@ const { generateSuggestions } = require("./services/gemini-suggestions");
 const {
   ALLOWED_CONTENT_TYPES,
   MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_PROFILE_IMAGE_BYTES,
   MAX_UPLOAD_BYTES,
+  PROFILE_IMAGE_CONTENT_TYPES,
   createS3Storage
 } = require("./services/s3-storage");
 
@@ -139,6 +141,16 @@ function parseMessagePayload(body, userId) {
   return { message, attachments };
 }
 
+async function createProfileImageUrl(key, contentType) {
+  if (!key) return null;
+  return s3Storage.createDownloadUrl({
+    key,
+    contentType,
+    fileName: "profile-image",
+    expiresIn: 24 * 60 * 60
+  });
+}
+
 async function saveMessage({ conversationId, userId, message, attachments }) {
   await Promise.all(attachments.map((attachment) => s3Storage.verifyUploadedObject({
     userId: String(userId),
@@ -174,6 +186,26 @@ async function saveMessage({ conversationId, userId, message, attachments }) {
 
 async function addAttachmentsToMessages(messages) {
   if (messages.length === 0) return messages;
+  const imageUrlsByKey = new Map();
+  const messagesWithImages = await Promise.all(messages.map(async (message) => {
+    const {
+      senderProfileImageKey,
+      senderProfileImageContentType,
+      ...savedMessage
+    } = message;
+    let senderImageUrl = null;
+    if (senderProfileImageKey) {
+      if (!imageUrlsByKey.has(senderProfileImageKey)) {
+        imageUrlsByKey.set(
+          senderProfileImageKey,
+          createProfileImageUrl(senderProfileImageKey, senderProfileImageContentType)
+        );
+      }
+      senderImageUrl = await imageUrlsByKey.get(senderProfileImageKey);
+    }
+    return { ...savedMessage, senderImageUrl };
+  }));
+
   const messageIds = messages.map(({ id }) => id);
   const placeholders = messageIds.map(() => "?").join(", ");
   const [rows] = await database.execute(
@@ -201,7 +233,7 @@ async function addAttachmentsToMessages(messages) {
       })
     });
   }));
-  return messages.map((message) => ({
+  return messagesWithImages.map((message) => ({
     ...message,
     attachments: attachmentsByMessage.get(String(message.id))
   }));
@@ -251,6 +283,28 @@ app.post("/api/uploads/presign", requireAuth, async (req, res) => {
       error: configurationError
         ? "File uploads are not configured. Set AWS_REGION, S3_BUCKET, and both AWS credentials in backend/.env."
         : "Unable to prepare the file upload."
+    });
+  }
+});
+
+app.post("/api/profile/image/presign", requireAuth, async (req, res) => {
+  const { contentType } = req.body || {};
+  if (typeof contentType !== "string" || !PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
+    return res.status(400).json({ error: "Profile images must be JPEG, PNG, or WebP." });
+  }
+
+  try {
+    return res.json(await s3Storage.createProfileImageUploadForm({
+      userId: String(req.authUser.id),
+      contentType
+    }));
+  } catch (error) {
+    console.error("Creating profile image upload form failed:", error);
+    const configurationError = /S3_BUCKET|AWS_REGION|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/.test(error.message);
+    return res.status(configurationError ? 503 : 500).json({
+      error: configurationError
+        ? "File uploads are not configured. Set AWS_REGION, S3_BUCKET, and both AWS credentials in backend/.env."
+        : "Unable to prepare the profile image upload."
     });
   }
 });
@@ -350,8 +404,120 @@ app.post("/api/ai/suggestions", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  return res.json({ user: req.authUser });
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  try {
+    const [users] = await database.execute(
+      "SELECT id, name, profile_image_key, profile_image_content_type FROM users WHERE id = ? LIMIT 1",
+      [req.authUser.id]
+    );
+    const user = users[0];
+    if (!user) return res.status(404).json({ error: "The account was not found." });
+
+    return res.json({
+      user: {
+        id: String(user.id),
+        name: user.name,
+        imageUrl: await createProfileImageUrl(user.profile_image_key, user.profile_image_content_type)
+      }
+    });
+  } catch (error) {
+    console.error("Loading the current profile failed:", error);
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to load your profile."
+    });
+  }
+});
+
+app.patch("/api/auth/profile", requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const hasName = body.name !== undefined;
+  const hasImage = body.image !== undefined;
+  if (!hasName && !hasImage) {
+    return res.status(400).json({ error: "Update your name or choose a profile image." });
+  }
+
+  let name;
+  if (hasName) {
+    if (typeof body.name !== "string") {
+      return res.status(400).json({ error: "Name must be text." });
+    }
+    name = body.name.trim();
+    if (!name || name.length > 100) {
+      return res.status(400).json({ error: "Name must be between 1 and 100 characters." });
+    }
+  }
+
+  let image;
+  if (hasImage) {
+    image = body.image;
+    if (
+      !image ||
+      typeof image !== "object" ||
+      Array.isArray(image) ||
+      typeof image.key !== "string" ||
+      !new RegExp(`^profile-images/${req.authUser.id}/[0-9a-f-]{36}$`).test(image.key) ||
+      typeof image.contentType !== "string" ||
+      !Number.isInteger(image.size) ||
+      !PROFILE_IMAGE_CONTENT_TYPES.has(image.contentType) ||
+      image.size < 1 ||
+      image.size > MAX_PROFILE_IMAGE_BYTES
+    ) {
+      return res.status(400).json({ error: "Choose a JPEG, PNG, or WebP image up to 5 MB." });
+    }
+  }
+
+  try {
+    if (image) {
+      await s3Storage.verifyProfileImage({
+        userId: String(req.authUser.id),
+        key: image.key,
+        contentType: image.contentType,
+        size: image.size
+      });
+    }
+
+    const [users] = await database.execute(
+      "SELECT id, name, profile_image_key, profile_image_content_type FROM users WHERE id = ? LIMIT 1",
+      [req.authUser.id]
+    );
+    const user = users[0];
+    if (!user) return res.status(404).json({ error: "The account was not found." });
+
+    const updatedName = hasName ? name : user.name;
+    const imageKey = hasImage ? image.key : user.profile_image_key;
+    const imageContentType = hasImage ? image.contentType : user.profile_image_content_type;
+    await database.execute(
+      "UPDATE users SET name = ?, profile_image_key = ?, profile_image_content_type = ? WHERE id = ?",
+      [updatedName, imageKey, imageContentType, req.authUser.id]
+    );
+
+    return res.json({
+      user: {
+        id: String(user.id),
+        name: updatedName,
+        imageUrl: imageKey
+          ? await s3Storage.createDownloadUrl({
+              key: imageKey,
+              contentType: imageContentType,
+              fileName: "profile-image",
+              expiresIn: 24 * 60 * 60
+            })
+          : null
+      }
+    });
+  } catch (error) {
+    console.error("Updating the current profile failed:", error);
+    if (error instanceof TypeError) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(isDatabaseUnavailable(error) ? 503 : 500).json({
+      error: isDatabaseUnavailable(error)
+        ? "The database is unavailable. Check the backend database settings."
+        : "Unable to update your profile."
+    });
+  }
 });
 
 app.get("/api/users/lookup", requireAuth, async (req, res) => {
@@ -362,7 +528,7 @@ app.get("/api/users/lookup", requireAuth, async (req, res) => {
 
   try {
     const [users] = await database.execute(
-      "SELECT id, name, email FROM users WHERE email = ? LIMIT 1",
+      "SELECT id, name, email, profile_image_key, profile_image_content_type FROM users WHERE email = ? LIMIT 1",
       [email]
     );
     const user = users[0];
@@ -372,7 +538,12 @@ app.get("/api/users/lookup", requireAuth, async (req, res) => {
 
     const id = String(user.id);
     return res.json({
-      user: { id, name: user.name, email: user.email },
+      user: {
+        id,
+        name: user.name,
+        email: user.email,
+        imageUrl: await createProfileImageUrl(user.profile_image_key, user.profile_image_content_type)
+      },
       roomId: personalRoomId(req.authUser.id, id)
     });
   } catch (error) {
@@ -395,7 +566,7 @@ app.get("/api/users/search", requireAuth, async (req, res) => {
   try {
     const searchTerm = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     const [users] = await database.execute(
-      `SELECT id, name, email FROM users
+      `SELECT id, name, email, profile_image_key, profile_image_content_type FROM users
        WHERE id <> ? AND (name LIKE ? OR email LIKE ?)
        ORDER BY name ASC
        LIMIT 8`,
@@ -403,11 +574,12 @@ app.get("/api/users/search", requireAuth, async (req, res) => {
     );
 
     return res.json({
-      users: users.map((user) => ({
+      users: await Promise.all(users.map(async (user) => ({
         id: String(user.id),
         name: user.name,
-        email: user.email
-      }))
+        email: user.email,
+        imageUrl: await createProfileImageUrl(user.profile_image_key, user.profile_image_content_type)
+      })))
     });
   } catch (error) {
     console.error("Searching chat users failed:", error);
@@ -446,7 +618,8 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
     const recipientIds = [...new Set(conversations.map(({ recipientId }) => recipientId))];
     const placeholders = recipientIds.map(() => "?").join(", ");
     const [users] = await database.execute(
-      `SELECT id, name, email FROM users WHERE id IN (${placeholders})`,
+      `SELECT id, name, email, profile_image_key, profile_image_content_type
+       FROM users WHERE id IN (${placeholders})`,
       recipientIds
     );
     const usersById = new Map(users.map((user) => [String(user.id), user]));
@@ -458,7 +631,9 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
     const [messages] = await database.execute(
       `SELECT messages.id, messages.conversation_id, messages.user_id,
               users.name AS sender, users.email AS sender_email,
-             messages.message, messages.created_at
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
+              messages.message, messages.created_at
       FROM ${CHAT_MESSAGE_SOURCE} AS messages
       INNER JOIN users ON users.id = messages.user_id
       WHERE messages.conversation_id IN (${roomPlaceholders})
@@ -471,6 +646,8 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
       userId: String(message.user_id),
       sender: message.sender,
       senderEmail: message.sender_email,
+      senderProfileImageKey: message.sender_profile_image_key,
+      senderProfileImageContentType: message.sender_profile_image_content_type,
       text: message.message,
       createdAt: message.created_at
     })));
@@ -480,14 +657,19 @@ app.get("/api/personal-conversations", requireAuth, async (req, res) => {
     });
 
     return res.json({
-      conversations: availableConversations.map(({ id, recipientId }) => {
+      conversations: await Promise.all(availableConversations.map(async ({ id, recipientId }) => {
         const user = usersById.get(recipientId);
         return {
           id,
-          user: { id: recipientId, name: user.name, email: user.email },
+          user: {
+            id: recipientId,
+            name: user.name,
+            email: user.email,
+            imageUrl: await createProfileImageUrl(user.profile_image_key, user.profile_image_content_type)
+          },
           messages: messagesByRoom.get(id)
         };
-      })
+      }))
     });
   } catch (error) {
     console.error("Loading personal conversations failed:", error);
@@ -691,7 +873,10 @@ app.get("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
 
     const [messages] = await database.execute(
       `SELECT messages.id, messages.conversation_id, messages.user_id,
-              users.name AS sender, messages.message, messages.created_at
+              users.name AS sender,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
+              messages.message, messages.created_at
        FROM ${CHAT_MESSAGE_SOURCE} AS messages
        INNER JOIN users ON users.id = messages.user_id
        WHERE messages.conversation_id = ?
@@ -703,6 +888,8 @@ app.get("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
       conversationId: message.conversation_id,
       userId: String(message.user_id),
       sender: message.sender,
+      senderProfileImageKey: message.sender_profile_image_key,
+      senderProfileImageContentType: message.sender_profile_image_content_type,
       text: message.message,
       createdAt: message.created_at
     })));
@@ -737,7 +924,10 @@ app.post("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
     });
     const [savedMessages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
-              users.name AS sender, chat_messages.message, chat_messages.created_at
+              users.name AS sender,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
+              chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.id = ?`,
@@ -749,6 +939,8 @@ app.post("/api/groups/:groupId/messages", requireAuth, async (req, res) => {
       conversationId: savedMessage.conversation_id,
       userId: String(savedMessage.user_id),
       sender: savedMessage.sender,
+      senderProfileImageKey: savedMessage.sender_profile_image_key,
+      senderProfileImageContentType: savedMessage.sender_profile_image_content_type,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
     }]);
@@ -774,7 +966,10 @@ app.get("/api/messages", requireAuth, async (req, res) => {
   try {
     const [messages] = await database.execute(
       `SELECT messages.id, messages.conversation_id, messages.user_id,
-              users.name AS sender, messages.message, messages.created_at
+              users.name AS sender,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
+              messages.message, messages.created_at
        FROM ${CHAT_MESSAGE_SOURCE} AS messages
        INNER JOIN users ON users.id = messages.user_id
        WHERE messages.conversation_id NOT LIKE 'personal:%'
@@ -789,6 +984,8 @@ app.get("/api/messages", requireAuth, async (req, res) => {
         conversationId: message.conversation_id,
         userId: String(message.user_id),
         sender: message.sender,
+        senderProfileImageKey: message.sender_profile_image_key,
+        senderProfileImageContentType: message.sender_profile_image_content_type,
         text: message.message,
         createdAt: message.created_at
     })));
@@ -818,7 +1015,10 @@ app.post("/api/messages", requireAuth, async (req, res) => {
     });
     const [messages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
-              users.name AS sender, chat_messages.message, chat_messages.created_at
+              users.name AS sender,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
+              chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
        WHERE chat_messages.id = ?`,
@@ -831,6 +1031,8 @@ app.post("/api/messages", requireAuth, async (req, res) => {
       conversationId: savedMessage.conversation_id,
       userId: String(savedMessage.user_id),
       sender: savedMessage.sender,
+      senderProfileImageKey: savedMessage.sender_profile_image_key,
+      senderProfileImageContentType: savedMessage.sender_profile_image_content_type,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
     }]);
@@ -862,6 +1064,8 @@ app.get("/api/personal-messages", requireAuth, async (req, res) => {
     const [messages] = await database.execute(
       `SELECT messages.id, messages.conversation_id, messages.user_id,
               users.name AS sender, users.email AS sender_email,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
               messages.message, messages.created_at
        FROM ${CHAT_MESSAGE_SOURCE} AS messages
        INNER JOIN users ON users.id = messages.user_id
@@ -876,6 +1080,8 @@ app.get("/api/personal-messages", requireAuth, async (req, res) => {
       userId: String(message.user_id),
       sender: message.sender,
       senderEmail: message.sender_email,
+      senderProfileImageKey: message.sender_profile_image_key,
+      senderProfileImageContentType: message.sender_profile_image_content_type,
       text: message.message,
       createdAt: message.created_at
     })));
@@ -915,6 +1121,8 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
     const [messages] = await database.execute(
       `SELECT chat_messages.id, chat_messages.conversation_id, chat_messages.user_id,
               users.name AS sender, users.email AS sender_email,
+              users.profile_image_key AS sender_profile_image_key,
+              users.profile_image_content_type AS sender_profile_image_content_type,
               chat_messages.message, chat_messages.created_at
        FROM chat_messages
        INNER JOIN users ON users.id = chat_messages.user_id
@@ -928,6 +1136,8 @@ app.post("/api/personal-messages", requireAuth, async (req, res) => {
       userId: String(savedMessage.user_id),
       sender: savedMessage.sender,
       senderEmail: savedMessage.sender_email,
+      senderProfileImageKey: savedMessage.sender_profile_image_key,
+      senderProfileImageContentType: savedMessage.sender_profile_image_content_type,
       text: savedMessage.message,
       createdAt: savedMessage.created_at
     }]);

@@ -4,9 +4,11 @@ const { createPresignedPost } = require("@aws-sdk/s3-presigned-post");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
 const UPLOAD_URL_EXPIRES_SECONDS = 300;
 const DOWNLOAD_URL_EXPIRES_SECONDS = 3600;
 const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+const PROFILE_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ALLOWED_CONTENT_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -80,6 +82,35 @@ function createS3Storage({
       };
     },
 
+    async createProfileImageUploadForm({ userId, contentType } = {}) {
+      if (typeof userId !== "string" || !/^[1-9][0-9]{0,19}$/.test(userId)) {
+        throw new TypeError("A valid authenticated user ID is required.");
+      }
+      if (!PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
+        throw new TypeError("Profile images must be JPEG, PNG, or WebP.");
+      }
+
+      const key = `profile-images/${userId}/${randomUUID()}`;
+      const result = await presign(getClient(), {
+        Bucket: bucket,
+        Key: key,
+        Expires: UPLOAD_URL_EXPIRES_SECONDS,
+        Fields: { "Content-Type": contentType },
+        Conditions: [
+          ["content-length-range", 1, MAX_PROFILE_IMAGE_BYTES],
+          ["eq", "$Content-Type", contentType]
+        ]
+      });
+
+      return {
+        url: result.url,
+        fields: result.fields,
+        key,
+        maxFileBytes: MAX_PROFILE_IMAGE_BYTES,
+        expiresIn: UPLOAD_URL_EXPIRES_SECONDS
+      };
+    },
+
     async verifyUploadedObject({ userId, key, contentType, size } = {}) {
       if (typeof userId !== "string" || !/^[1-9][0-9]{0,19}$/.test(userId)) {
         throw new TypeError("A valid authenticated user ID is required.");
@@ -103,7 +134,30 @@ function createS3Storage({
       }
     },
 
-    async createDownloadUrl({ key, contentType, fileName } = {}) {
+    async verifyProfileImage({ userId, key, contentType, size } = {}) {
+      if (typeof userId !== "string" || !/^[1-9][0-9]{0,19}$/.test(userId)) {
+        throw new TypeError("A valid authenticated user ID is required.");
+      }
+      if (typeof key !== "string" || !new RegExp(`^profile-images/${userId}/[0-9a-f-]{36}$`).test(key)) {
+        throw new TypeError("The profile image key is invalid.");
+      }
+      if (!PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
+        throw new TypeError("Profile images must be JPEG, PNG, or WebP.");
+      }
+      if (!Number.isInteger(size) || size < 1 || size > MAX_PROFILE_IMAGE_BYTES) {
+        throw new TypeError("Profile images must be 5 MB or smaller.");
+      }
+
+      const { ContentLength, ContentType } = await getClient().send(new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key
+      }));
+      if (ContentLength !== size || ContentType !== contentType) {
+        throw new TypeError("The uploaded profile image does not match its declared type or size.");
+      }
+    },
+
+    async createDownloadUrl({ key, contentType, fileName, expiresIn = DOWNLOAD_URL_EXPIRES_SECONDS } = {}) {
       const safeFileName = encodeURIComponent(fileName).replace(/['()*]/g, (character) =>
         `%${character.charCodeAt(0).toString(16).toUpperCase()}`
       );
@@ -115,7 +169,7 @@ function createS3Storage({
           ResponseContentDisposition: `inline; filename*=UTF-8''${safeFileName}`,
           ResponseContentType: contentType
         }),
-        { expiresIn: DOWNLOAD_URL_EXPIRES_SECONDS }
+        { expiresIn }
       );
     }
   };
@@ -123,8 +177,10 @@ function createS3Storage({
 
 module.exports = {
   ALLOWED_CONTENT_TYPES,
+  MAX_PROFILE_IMAGE_BYTES,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_UPLOAD_BYTES,
+  PROFILE_IMAGE_CONTENT_TYPES,
   UPLOAD_URL_EXPIRES_SECONDS,
   createS3Storage
 };
