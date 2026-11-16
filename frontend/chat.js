@@ -76,6 +76,9 @@ const mediaDialogClose = document.querySelector("#media-dialog-close");
 const backButton = document.querySelector("#back-button");
 const authStatus = document.querySelector("#auth-status");
 const profileAvatar = document.querySelector("#profile-avatar");
+const logoutButton = document.querySelector("#logout-button");
+const logoutDialog = document.querySelector("#logout-dialog");
+const logoutConfirm = document.querySelector("#logout-confirm");
 const personalChatForm = document.querySelector("#personal-chat-form");
 const personalChatEmail = document.querySelector("#personal-chat-email");
 const personalChatResults = document.querySelector("#personal-chat-results");
@@ -1421,6 +1424,16 @@ messageForm.addEventListener("submit", async (event) => {
 });
 backButton.addEventListener("click", () => {
   app.classList.remove("show-conversation");
+});
+
+logoutButton.addEventListener("click", () => {
+  logoutDialog.showModal();
+});
+
+logoutConfirm.addEventListener("click", () => {
+  sessionStorage.removeItem("authToken");
+  if (realtimeSocket) realtimeSocket.disconnect();
+  window.location.replace("auth/login.html");
 });
 
 function closeMediaPreview() {

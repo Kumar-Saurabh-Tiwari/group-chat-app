@@ -65,10 +65,10 @@
           <span>ALL CHATS</span>
         </div>
         <nav class="conversation-list" id="conversation-list" aria-label="All chats"></nav>
-        <a class="sidebar-footer" href="index.html">
-          <span class="footer-icon" aria-hidden="true">←</span>
-          <span>Back to home</span>
-        </a>
+        <button class="sidebar-footer" id="logout-button" type="button">
+          <span class="footer-icon" aria-hidden="true">↪</span>
+          <span>Log out</span>
+        </button>
       </aside>
 
       <section class="conversation-view" aria-label="Chat conversation">
@@ -112,6 +112,19 @@
         </form>
       </section>
     </main>
+    <dialog class="logout-dialog" id="logout-dialog" aria-labelledby="logout-dialog-title" aria-describedby="logout-dialog-description">
+      <div class="logout-dialog-panel">
+        <span class="logout-dialog-icon" aria-hidden="true">↪</span>
+        <h2 id="logout-dialog-title">Log out?</h2>
+        <p id="logout-dialog-description">Are you sure you want to log out of your account?</p>
+        <div class="logout-dialog-actions">
+          <form method="dialog">
+            <button class="logout-cancel" type="submit">Cancel</button>
+          </form>
+          <button class="logout-confirm" id="logout-confirm" type="button">Log out</button>
+        </div>
+      </div>
+    </dialog>
     <dialog class="media-dialog" id="media-dialog" aria-labelledby="media-dialog-name">
       <div class="media-dialog-panel">
         <header class="media-dialog-header">

@@ -513,18 +513,28 @@ kbd {
 
 .sidebar-footer {
   display: flex;
+  width: calc(100% - 36px);
   min-height: 58px;
   align-items: center;
   gap: 10px;
   margin: 0 18px;
+  padding: 0;
+  border: 0;
   border-top: 1px solid var(--line);
+  background: transparent;
   color: #8e8d9d;
+  cursor: pointer;
   font-size: 11px;
-  text-decoration: none;
+  text-align: left;
+  transition: color .16s ease;
+}
+
+.sidebar-footer:hover {
+  color: #a24952;
 }
 
 .footer-icon {
-  color: var(--purple);
+  color: #a24952;
   font-size: 17px;
 }
 
@@ -1015,6 +1025,98 @@ kbd {
   color: #a24952;
 }
 
+.logout-dialog {
+  width: min(390px, calc(100vw - 32px));
+  padding: 28px;
+  border: 1px solid #eeedf3;
+  border-radius: 18px;
+  background: #fff;
+  color: #24253a;
+  box-shadow: 0 24px 80px rgba(39, 37, 76, .2);
+}
+
+.logout-dialog::backdrop {
+  background: rgba(26, 25, 42, .42);
+  backdrop-filter: blur(4px);
+}
+
+.logout-dialog-panel {
+  display: grid;
+  justify-items: start;
+}
+
+.logout-dialog-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: #fff0ef;
+  color: #a24952;
+  font-size: 23px;
+}
+
+.logout-dialog h2 {
+  margin: 18px 0 6px;
+  font-family: Manrope, sans-serif;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -.4px;
+}
+
+.logout-dialog p {
+  margin: 0;
+  color: #77768a;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.logout-dialog-actions {
+  display: flex;
+  width: 100%;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 24px;
+}
+
+.logout-dialog-actions form {
+  margin: 0;
+}
+
+.logout-dialog-actions button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #e8e7ed;
+  border-radius: 9px;
+  background: #fff;
+  color: #555468;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+
+.logout-dialog-actions button:hover {
+  transform: translateY(-1px);
+}
+
+.logout-dialog-actions .logout-confirm {
+  border-color: #a24952;
+  background: #a24952;
+  color: #fff;
+}
+
+.logout-dialog-actions .logout-confirm:hover {
+  border-color: #893b44;
+  background: #893b44;
+}
+
+.logout-dialog-actions button:focus-visible,
+.sidebar-footer:focus-visible {
+  outline: 3px solid rgba(103, 88, 216, .28);
+  outline-offset: 2px;
+}
+
 .media-dialog {
   width: min(1000px, calc(100vw - 32px));
   max-width: none;
@@ -1239,8 +1341,7 @@ video.media-dialog-media {
 .attachment-button:focus-visible,
 .attachment-remove:focus-visible,
 .conversation-item:focus-visible,
-.back-button:focus-visible,
-.sidebar-footer:focus-visible {
+.back-button:focus-visible {
   outline: 3px solid rgba(103, 88, 216, .28);
   outline-offset: 2px;
 }
